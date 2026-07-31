@@ -10,3 +10,4 @@
 # (see TestMain in internal/cmd), so this only guards a human running the CLI here by hand.
 /payment/
 /project/
+.scaffold.yaml
