@@ -32,7 +32,7 @@ func loadConfig(path string) (*config, error) {
 }
 
 // resolveScaffoldingCodeRoot decides which scaffolding-code path to use, implementing the
-// six-step order in PRD v1.8 Section 8.4:
+// six-step order in PRD Section 8.4:
 //
 //	1. --scaffolding-code=<path>
 //	2. $SCAFFOLD_CODE

@@ -4,3 +4,9 @@
 *.test
 *.out
 .vscode/
+
+# Belt and braces. `--output` defaults to "." and a stray `create` run from this directory would
+# drop a whole generated project into the source tree. The test binary now chdirs into a sandbox
+# (see TestMain in internal/cmd), so this only guards a human running the CLI here by hand.
+/payment/
+/project/

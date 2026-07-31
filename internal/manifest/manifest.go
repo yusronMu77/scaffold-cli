@@ -1,5 +1,5 @@
 // Package manifest defines the manifest.yaml schema shared by every folder under
-// scaffolding-code/<framework>/<version>/. PRD Section 7 (v1.4) defines two shapes that live
+// scaffolding-code/<framework>/<version>/. PRD Section 7 defines the shapes that live
 // in the same file format, distinguished purely by which fields are present:
 //   - selector: an intermediate node — its subfolders are values for --<Selector>.
 //   - leaf: files/dependencies/variables — the actual template to render.
@@ -9,29 +9,209 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Variable is a value the engine substitutes into rendered files, sourced from a CLI flag
-// (e.g. --name, --package) or its own default.
+// Variable is a value the engine substitutes into rendered files (PRD Section 7.4).
+//
+// Where the value comes from is resolved in this order: the CLI flag named by Flag (defaulting
+// to the kebab-case of Name), then FromPositional, then Default, then an error if Required.
+// Prompt is help text only - this CLI is never interactive, so a missing value produces an error
+// naming the flag rather than a prompt that would hang in a script.
 type Variable struct {
-	Name    string `yaml:"name"`
-	Prompt  string `yaml:"prompt"`
-	Default string `yaml:"default"`
+	Name   string `yaml:"name"`
+	Prompt string `yaml:"prompt,omitempty"`
+
+	// Flag is the CLI flag that fills this variable. Empty means kebab-case of Name
+	// (ProjectName -> --project-name). Declaring it keeps flag naming a manifest decision,
+	// exactly like `selector:` on a node and `flag:` on a registry entry.
+	Flag string `yaml:"flag,omitempty"`
+
+	// FromPositional binds this variable to a positional argument; the only supported value is
+	// "name". This is what avoids hardcoding a variable called "ProjectName" in the engine -
+	// which template author's variable receives <name> is their choice, not ours (rule #2).
+	FromPositional string `yaml:"from_positional,omitempty"`
+
+	Default  string `yaml:"default,omitempty"`
+	Required bool   `yaml:"required,omitempty"`
 }
 
-// FileEntry is one file or directory copied (and optionally templated) into the output.
+// LayoutRule rewrites a source path prefix into an output path prefix, and is INHERITED down the
+// chain (PRD Section 7.3).
+//
+// It exists so writing a template stays cheap. The only genuinely awkward part of a Java layout is
+// the package directory, whose name is derived from a dotted variable and so cannot exist
+// literally on disk. Declaring the mapping once, high up:
+//
+//	layout:
+//	  - from: "java"
+//	    to: "src/main/java/{{ .PackagePath }}"
+//
+// means every template below - mvc/, and the ddd/ or hexagonal/ siblings added later - just drops
+// files into a plain `java/` folder and declares nothing at all. Real `controller/`, `service/`
+// subfolders stay visible in the source tree, and the deep output directories are created on
+// demand when the files are written.
+//
+// A deeper level redeclaring the same `from` replaces it, so a template with an unusual layout can
+// still opt out. To is a template, evaluated against the render context.
+type LayoutRule struct {
+	From string `yaml:"from"`
+	To   string `yaml:"to"`
+}
+
+// Computed is a variable derived from other variables rather than supplied by the user. Its
+// Value is itself a template, evaluated against the context built from the resolved variables.
+//
+// This exists because some derived value is always needed and the engine must not know what it
+// is. The motivating case is a Java package: `com.company.app` has to become the directory
+// `com/company/app`, but a path segment on disk cannot contain a separator, so the source folder
+// is named `{{ .PackagePath }}` and PackagePath is computed here. Teaching the engine about Java
+// packages instead would break fundamental rules #1 and #2; a computed variable keeps the
+// knowledge in the data where it belongs, and works for any framework's equivalent need.
+//
+// Computed variables are evaluated in declaration order along the inheritance chain, so a later
+// one may reference an earlier one.
+type Computed struct {
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
+}
+
+// FileEntry is an OPTIONAL per-file override, not a table of contents (PRD Section 7.3).
+//
+// The source folder's actual contents are the source of truth: the renderer walks it and renders
+// everything it finds. An entry is only needed for something the filesystem cannot express - where
+// the file should land, whether to template it, or whether to emit it at all.
 type FileEntry struct {
-	Path     string `yaml:"path"`
-	Template bool   `yaml:"template"`
+	// Path is a file OR a directory, relative to the source folder, before placeholder
+	// substitution. Naming a directory maps its whole subtree in one entry.
+	Path string `yaml:"path"`
+
+	// Target is where Path lands in the generated project, as a template. When empty the output
+	// path mirrors Path. When Path is a directory, Target is the destination prefix and everything
+	// underneath keeps its relative structure.
+	//
+	// This is what keeps a template folder shallow without turning `files:` back into a mandatory
+	// table of contents. The awkward part of a Java layout is one thing only - the package
+	// directory, whose name has to be derived from a dotted variable and so cannot exist literally
+	// on disk. So the source keeps a plain `java/` folder with real `controller/`, `service/`
+	// subfolders inside it, and a single entry moves the lot:
+	//
+	//	files:
+	//	  - path: "java"
+	//	    target: "{{ .JavaDir }}"
+	//
+	// Adding a file under java/controller/ then needs no manifest change at all, and the output
+	// directories are created on demand when the files are written.
+	Target string `yaml:"target,omitempty"`
+
+	// Template controls whether the file is rendered. It is a *bool so that "absent" is
+	// distinguishable from "false": absent means the default (render it), false means copy the
+	// bytes verbatim. A plain bool would silently turn every listed file into a binary copy.
+	Template *bool `yaml:"template,omitempty"`
+
+	// Condition names a variable that must be truthy for this file to be emitted.
+	Condition string `yaml:"condition,omitempty"`
 }
 
-// Dependency is a Maven coordinate to add to the generated pom.xml (groupId+artifactId only —
-// the version comes from the Parent POM per PRD Section 6).
-type Dependency struct {
-	GroupID    string `yaml:"groupId"`
-	ArtifactID string `yaml:"artifactId"`
+// ShouldTemplate reports whether this entry's file should be rendered as a template.
+func (f FileEntry) ShouldTemplate() bool {
+	return f.Template == nil || *f.Template
+}
+
+// Dependency is one entry in a manifest's `dependencies:` list. Its FIELD NAMES ARE NOT FIXED.
+//
+// The engine reads it as an opaque set of key/value pairs, renders each value as a template, and
+// hands the whole thing to the template as an element of .Dependencies. It never inspects a field,
+// never requires one, and attaches no meaning to any name.
+//
+// This is what fundamental rule #1 demands. An earlier version declared `groupId`/`artifactId` as
+// struct fields, which put Maven's vocabulary inside the engine: a Node manifest could not express
+// `"react": "^18.0"`, and a Go one could not express `github.com/x/y v1.2.3`. That made the Phase 4
+// promise - add a framework with zero engine changes - impossible to keep, because the second
+// framework would have forced exactly such a change.
+//
+// So Maven's shape now lives entirely in the data:
+//
+//	dependencies:
+//	  - groupId: org.springframework.boot
+//	    artifactId: spring-boot-starter-web
+//
+// and npm's would be `- name: react` / `version: "^18.0"`. Both work, neither is privileged.
+type Dependency map[string]string
+
+// Get returns a field, or "" when absent. Templates see every dependency with the same key set
+// (see the render package), so they can write `{{ .scope }}` without guarding.
+func (d Dependency) Get(key string) string { return d[key] }
+
+// MergePaths returns the output paths to deep-merge, accepting both the current `merge:` field and
+// the older `merge_yaml:` spelling.
+func (m *Manifest) MergePaths() []string {
+	if len(m.MergeYAML) == 0 {
+		return m.Merge
+	}
+	return append(append([]string{}, m.Merge...), m.MergeYAML...)
+}
+
+// Identity builds the value used to deduplicate a dependency against others.
+//
+// keys comes from the manifest's `dependency_key`; when it is empty every field participates,
+// which is the safe default (it only ever merges entries that are genuinely identical).
+func (d Dependency) Identity(keys []string) string {
+	if len(keys) == 0 {
+		keys = make([]string, 0, len(d))
+		for k := range d {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+	}
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+d[k])
+	}
+	return strings.Join(parts, "\x00")
+}
+
+// UnmarshalYAML accepts a mapping of scalars and rejects anything nested, because a dependency
+// coordinate is a flat set of fields in every build tool the engine is likely to meet. Saying so
+// plainly beats rendering "map[]" into a build file.
+func (d *Dependency) UnmarshalYAML(value *yaml.Node) error {
+	var raw map[string]any
+	if err := value.Decode(&raw); err != nil {
+		return fmt.Errorf("a dependency must be a mapping of fields: %w", err)
+	}
+	out := make(Dependency, len(raw))
+	for k, v := range raw {
+		s, ok := scalarString(v)
+		if !ok {
+			return fmt.Errorf("dependency field %q must be a single value, not a list or a nested map", k)
+		}
+		out[k] = s
+	}
+	*d = out
+	return nil
+}
+
+func scalarString(v any) (string, bool) {
+	switch t := v.(type) {
+	case nil:
+		return "", true
+	case string:
+		return t, true
+	case bool:
+		return strconv.FormatBool(t), true
+	case int:
+		return strconv.Itoa(t), true
+	case int64:
+		return strconv.FormatInt(t, 10), true
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64), true
+	default:
+		return "", false
+	}
 }
 
 // PostHook is a shell command run after generation, gated by a condition expression.
@@ -76,10 +256,62 @@ type Manifest struct {
 	// treating a folder literally named "templates" as required, for backward compatibility.
 	Required bool `yaml:"required,omitempty"`
 
-	Variables    []Variable   `yaml:"variables,omitempty"`
-	Files        []FileEntry  `yaml:"files,omitempty"`
+	Variables []Variable   `yaml:"variables,omitempty"`
+	Computed  []Computed   `yaml:"computed,omitempty"`
+	Layout    []LayoutRule `yaml:"layout,omitempty"`
+	Files     []FileEntry  `yaml:"files,omitempty"`
+
+	// DependencyFields declares every field a dependency may have, for this framework. Inherited
+	// like `layout`; the deepest declaration wins.
+	//
+	// It does two jobs, both of which the opaque `dependencies` shape would otherwise lose:
+	//
+	//   - Templates run with missingkey=error, so `{{ .version }}` is a hard error on an entry
+	//     that does not set it. Every dependency is normalised to exactly this field set, missing
+	//     ones filled with "", so a template can reference any declared field unguarded. Inferring
+	//     the set from whatever happens to be declared is not enough: a library whose dependencies
+	//     all omit `version` would break the very same shared pom.xml that a service renders fine.
+	//   - A field NOT in this list is a typo and is rejected by name. Without it, `artifctId:`
+	//     would silently render nothing - exactly the class of silent failure rule #8 forbids.
+	//
+	// Leave it unset and the engine falls back to the union of fields actually declared, which is
+	// fine for a small framework but gives up both benefits above.
+	DependencyFields []string `yaml:"dependency_fields,omitempty"`
+
+	// DependencyKey names the fields that together identify a dependency, for deduplication when
+	// several levels of the chain declare the same one. Inherited like `layout`; deepest wins.
+	//
+	// It has to be data rather than an engine constant, because what identifies a dependency is a
+	// property of the build tool: Maven says groupId+artifactId (a second entry differing only in
+	// `scope` is the same dependency), npm says name alone. With it unset, every field
+	// participates - safe, but it will keep two entries that differ in any way at all.
+	DependencyKey []string `yaml:"dependency_key,omitempty"`
+
+	// Exclude drops inherited output paths that this level does not want. Entries are glob
+	// patterns matched against the OUTPUT path (the same key collisions use), e.g.
+	// "src/test/java/**/ApplicationTests.java" or "Dockerfile".
+	//
+	// This is the third of the three things a level can do to what it inherits: add, override, or
+	// remove. Without it, anything contributed high up would be impossible to opt out of, which
+	// would push template authors back towards duplicating a whole subtree just to leave one file
+	// out - the exact duplication the inheritance chain exists to remove.
+	Exclude      []string     `yaml:"exclude,omitempty"`
 	Dependencies []Dependency `yaml:"dependencies,omitempty"`
 	PostHooks    []PostHook   `yaml:"post_hooks,omitempty"`
+
+	// Merge lists output paths that must be DEEP-MERGED when more than one source contributes
+	// them, instead of the later source replacing the earlier one wholesale (PRD Section 6).
+	// application.yml is the motivating case: a pattern overlay needs to add keys to it, not
+	// discard the base service's copy.
+	//
+	// The format is inferred from the extension - .yml/.yaml and .json today. Naming the field
+	// `merge` rather than `merge_yaml` is the point: package.json and Cargo.toml need exactly this
+	// behaviour, and a field name that hardcodes one format announces a limitation the engine has
+	// no reason to have.
+	Merge []string `yaml:"merge,omitempty"`
+
+	// MergeYAML is the former name of Merge, still accepted so existing manifests keep working.
+	MergeYAML []string `yaml:"merge_yaml,omitempty"`
 
 	// MergePriority orders file-overlay precedence when multiple axes are selected at once
 	// (implementation-plan Open Question #7). Higher applies later (wins on same-path
@@ -121,8 +353,8 @@ func (m *Manifest) ValueNames() []string {
 	return names
 }
 
-// Shape is the structural classification of a manifest. PRD v1.8 Section 7.1 replaced the old
-// binary leaf-vs-selector test with three shapes: v1.7 added the registry form, but IsLeaf was
+// Shape is the structural classification of a manifest. PRD Section 7.1 defines three shapes.
+// An earlier binary leaf-vs-selector test predated the registry form, so IsLeaf was
 // still defined as "no selector field", so a registry manifest - and equally an empty one, or one
 // whose `selector` key was misspelled - was classified as a renderable leaf and produced an empty
 // project with no error at all (design review 2026-07-27 section 2.9).
@@ -183,42 +415,57 @@ func (m *Manifest) IsLeaf() bool { return m.Shape() == ShapeLeaf }
 // IsRegistry reports whether this manifest only registers its children.
 func (m *Manifest) IsRegistry() bool { return m.Shape() == ShapeRegistry }
 
-// Validate rejects the one field combination that is genuinely ambiguous at any level.
+// Validate checks a manifest for combinations that cannot mean anything coherent.
 //
 // It deliberately does NOT reject ShapeUnknown: a metadata-only manifest is perfectly legitimate
 // at the axis level, where `name`/`description`/`required` are all that is needed and the axis's
 // values come from directory listing. ShapeUnknown only becomes an error where a manifest must be
 // renderable or navigable - see RequireNavigable, called from the selector walk.
+//
+// Nor does it reject `selector:` alongside files/dependencies/variables. Under the inheritance
+// model every level may contribute content (PRD Section 6 step 3), so a selector node carrying a
+// shared skeleton is the normal case, not an ambiguity: `selector:` decides that the node is
+// navigable, and its content is what it contributes on the way past. Rejecting the combination
+// would force every leaf to duplicate whatever its parents have in common - the exact duplication
+// the inheritance chain exists to remove.
 func (m *Manifest) Validate(path string) error {
-	if m.Selector != "" && (len(m.Files) > 0 || len(m.Dependencies) > 0) {
-		return fmt.Errorf("manifest at %s is ambiguous: it declares `selector: %s` and also "+
-			"leaf content (files/dependencies) - split the selector node and the leaf into "+
-			"separate folders", path, m.Selector)
+	for i, c := range m.Computed {
+		if c.Name == "" || c.Value == "" {
+			return fmt.Errorf("manifest at %s: computed[%d] needs both `name` and `value`", path, i)
+		}
+	}
+	for i, v := range m.Variables {
+		if v.Name == "" {
+			return fmt.Errorf("manifest at %s: variables[%d] has no `name`", path, i)
+		}
+		if v.FromPositional != "" && v.FromPositional != "name" {
+			return fmt.Errorf("manifest at %s: variable %q has from_positional: %q, but the only "+
+				"positional a variable can bind to is \"name\"", path, v.Name, v.FromPositional)
+		}
 	}
 	return nil
 }
 
-// RequireNavigable rejects a manifest that the selector walk cannot act on: it must either
-// recurse (selector) or render (leaf).
+// RequireNavigable rejects a manifest that the selector walk cannot act on.
 //
-// This is where the old binary classification did real damage. IsLeaf() was "no selector field",
-// so a v1.7 registry manifest, an empty manifest, and a manifest whose `selector` key was
-// misspelled were all treated as renderable leaves - each producing an empty project with no
-// error at all (design review 2026-07-27 section 2.9). PRD v1.8 Section 7.1 makes these errors.
+// Only the registry shape is rejected: `values:` with no `selector:` declares what a level's
+// children are, which says nothing about descending or rendering, so hitting one on a category's
+// chain means the walk has gone somewhere it should not be.
+//
+// A manifest declaring nothing at all (just `name`/`description`) is accepted as a leaf. Under
+// the inheritance model that is a real and useful case: a category whose entire content comes
+// from the levels above it - the shared pom.xml and nothing else - has nothing of its own to
+// declare, and forcing it to invent a field would be noise. The failure this used to guard
+// against, a misspelled `selector` key silently producing an empty project, is now caught by two
+// better checks: the flags meant for the missing selector are rejected as unknown (rule #8), and
+// a chain that renders zero files is an error at write time.
 func (m *Manifest) RequireNavigable(path string) error {
-	switch m.Shape() {
-	case ShapeSelector, ShapeLeaf:
-		return nil
-	case ShapeRegistry:
+	if m.Shape() == ShapeRegistry {
 		return fmt.Errorf("manifest at %s only declares `values:` - it is a registry, not a "+
 			"selector node or a leaf template, so there is nothing to descend into or render "+
 			"(PRD Section 7.1)", path)
-	default:
-		return fmt.Errorf("manifest at %s declares none of `selector:`, `values:`, or "+
-			"`files:`/`dependencies:`/`variables:` - a node on a category's selector chain must "+
-			"be either a selector node or a leaf template (PRD Section 7.1). A misspelled "+
-			"`selector` key is the usual cause", path)
 	}
+	return nil
 }
 
 // Load reads, parses and validates manifest.yaml at the given path.
@@ -258,7 +505,7 @@ func LoadOptional(path string) (*Manifest, error) {
 // templates/manifest.yaml, a pattern name in patterns/manifest.yaml, or any future axis's own
 // list. Always the same shape at every level.
 //
-// PRD v1.8 Section 4.1 separates three identities that earlier versions conflated into one or
+// PRD Section 4.1 separates three identities that earlier versions conflated into one or
 // two fields - which was the root cause of two real bugs (design review 2026-07-27 sections 2.2
 // and 2.3):
 //
@@ -330,7 +577,7 @@ func (r *RootManifest) FrameworkNames() []string {
 }
 
 // LoadRoot reads and parses the framework registry at scaffolding-code/manifest.yaml. Unlike
-// every other level, this one is mandatory (PRD v1.8 Section 4.1): falling back to a directory
+// every other level, this one is mandatory (PRD Section 4.1): falling back to a directory
 // listing here would register .git, .vscode and any stray folder as a "framework".
 func LoadRoot(path string) (*RootManifest, error) {
 	data, err := os.ReadFile(path)

@@ -262,7 +262,7 @@ values:
 	}
 }
 
-// PRD v1.8 Section 4.1: the registry is authoritative for explicitly-typed values too, not just
+// PRD Section 4.1: the registry is authoritative for explicitly-typed values too, not just
 // for defaults. Previously an explicit --fw-version was returned untouched, so a typo surfaced
 // much later as "cannot find the file" naming a path the user never typed (design review section
 // 2.12).
@@ -637,7 +637,7 @@ func TestWalkCategory_Services_TwoLevels(t *testing.T) {
 	if result.Leaf.Name != "REST HTTP Service" {
 		t.Errorf("expected leaf name 'REST HTTP Service', got %q", result.Leaf.Name)
 	}
-	if len(result.Leaf.Dependencies) != 1 || result.Leaf.Dependencies[0].ArtifactID != "spring-boot-starter-web" {
+	if len(result.Leaf.Dependencies) != 1 || result.Leaf.Dependencies[0]["artifactId"] != "spring-boot-starter-web" {
 		t.Errorf("expected one dependency spring-boot-starter-web, got %+v", result.Leaf.Dependencies)
 	}
 }
@@ -915,7 +915,7 @@ values:
 	}
 }
 
-// An axis with no `flag` field keeps its name as the flag, preserving the pre-v1.8 behaviour.
+// An axis with no `flag` field keeps its name as the flag, the common case.
 func TestDiscoverAxes_FlagDefaultsToName(t *testing.T) {
 	versionPath := t.TempDir()
 	writeFixtureManifest(t, versionPath, "name: v\nvalues:\n  - name: \"templates\"\n  - name: \"test\"\n")
@@ -1035,18 +1035,26 @@ func TestWalkCategory_RegistryManifestIsNotARenderableLeaf(t *testing.T) {
 	}
 }
 
-// A misspelled `selector` key made the manifest shapeless, which the old code also read as an
-// empty leaf.
-func TestWalkCategory_ShapelessManifestIsAnError(t *testing.T) {
+// A manifest that declares nothing of its own ends the walk as a leaf, because under the
+// inheritance model its content legitimately comes entirely from the levels above it.
+//
+// This is also what a misspelled `selector` key looks like, and the two are indistinguishable
+// from the manifest alone. Erroring here would make pure-inheritance leaves impossible, so the
+// typo is caught elsewhere and just as loudly: the flags intended for the missing selector are
+// rejected as unknown, and a chain that renders no files fails at write time.
+func TestWalkCategory_ManifestWithNoContentIsAnInheritingLeaf(t *testing.T) {
 	templatesPath := t.TempDir()
-	writeFixtureManifest(t, filepath.Join(templatesPath, "services"), "name: S\nselektor: function\n")
+	writeFixtureManifest(t, filepath.Join(templatesPath, "services"), "name: S\n")
 
-	_, err := WalkCategory(templatesPath, "services", nil)
-	if err == nil {
-		t.Fatal("expected a manifest with no recognisable shape to be rejected, got nil")
+	result, err := WalkCategory(templatesPath, "services", nil)
+	if err != nil {
+		t.Fatalf("expected the walk to end at an inheriting leaf, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "selector") {
-		t.Errorf("expected the error to hint at the misspelled selector key, got: %v", err)
+	if len(result.Steps) != 0 {
+		t.Errorf("expected no selector steps, got %+v", result.Steps)
+	}
+	if len(result.Chain) != 1 {
+		t.Errorf("expected a single-node chain, got %d nodes", len(result.Chain))
 	}
 }
 

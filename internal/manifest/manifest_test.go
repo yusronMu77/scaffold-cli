@@ -77,7 +77,7 @@ incompatible_with:
 	if len(m.Files) != 1 || m.Files[0].Path != "pom.xml" {
 		t.Errorf("expected one FileEntry for pom.xml, got %+v", m.Files)
 	}
-	if len(m.Dependencies) != 1 || m.Dependencies[0].ArtifactID != "spring-boot-starter-web" {
+	if len(m.Dependencies) != 1 || m.Dependencies[0]["artifactId"] != "spring-boot-starter-web" {
 		t.Errorf("expected one Dependency for spring-boot-starter-web, got %+v", m.Dependencies)
 	}
 	if m.MergePriority != 10 {
@@ -208,8 +208,8 @@ values:
 }
 
 // ---------------------------------------------------------------------------------------------
-// Shape classification (PRD v1.8 Section 7.1) — added after the 2026-07-27 design review found
-// that IsLeaf() = !IsSelector() misclassified v1.7's registry form as a renderable leaf.
+// Shape classification (PRD Section 7.1) — added after the 2026-07-27 design review found
+// that IsLeaf() = !IsSelector() misclassified the registry form as a renderable leaf.
 // ---------------------------------------------------------------------------------------------
 
 func TestShape_Classification(t *testing.T) {
@@ -269,7 +269,9 @@ func TestRequireNavigable(t *testing.T) {
 		{"selector is navigable", "selector: function\n", false},
 		{"leaf is navigable", "files:\n  - path: pom.xml\n", false},
 		{"registry is not", "values:\n  - name: a\n", true},
-		{"metadata only is not", "name: M\n", true},
+		// A leaf that declares nothing of its own is legitimate under the inheritance model:
+		// everything it produces comes from the levels above it.
+		{"metadata-only is an inheriting leaf", "name: M\n", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -285,15 +287,47 @@ func TestRequireNavigable(t *testing.T) {
 	}
 }
 
-// selector + leaf content in one file is genuinely ambiguous and rejected at load time.
-func TestLoad_RejectsSelectorPlusLeafContent(t *testing.T) {
+// A selector node carrying content is the normal case under the inheritance model, not an
+// ambiguity: `selector:` makes the node navigable, and its files/dependencies are what it
+// contributes on the way past. This is what lets a shared skeleton live on services/ instead of
+// being copied into every leaf below it (PRD Section 6 step 3).
+func TestLoad_AllowsSelectorNodeWithContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "manifest.yaml")
-	body := "name: X\nselector: function\nfiles:\n  - path: pom.xml\n"
+	body := "name: X\nselector: function\ndependencies:\n  - groupId: g\n    artifactId: a\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+	m, err := Load(path)
+	if err != nil {
+		t.Fatalf("a selector node with content must load: %v", err)
+	}
+	if m.Shape() != ShapeSelector {
+		t.Errorf("expected the node to stay a selector, got %v", m.Shape())
+	}
+	if len(m.Dependencies) != 1 {
+		t.Errorf("expected its contributed dependency to survive, got %+v", m.Dependencies)
+	}
+}
+
+func TestValidate_RejectsUnsupportedFromPositional(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manifest.yaml")
+	body := "name: X\nvariables:\n  - name: V\n    from_positional: category\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("writing fixture: %v", err)
 	}
 	if _, err := Load(path); err == nil {
-		t.Fatal("expected an ambiguous selector+files manifest to be rejected, got nil")
+		t.Fatal("expected from_positional other than \"name\" to be rejected, got nil")
+	}
+}
+
+func TestValidate_RejectsIncompleteComputed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manifest.yaml")
+	body := "name: X\ncomputed:\n  - name: PackagePath\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected a computed entry with no value to be rejected, got nil")
 	}
 }
 
@@ -316,7 +350,7 @@ func TestLoadOptional(t *testing.T) {
 	}
 }
 
-// PRD v1.8 Section 4.1: name / path / flag are three separate identities.
+// PRD Section 4.1: name / path / flag are three separate identities.
 func TestEntry_DirNameAndFlagName(t *testing.T) {
 	plain := Entry{Name: "patterns"}
 	if plain.DirName() != "patterns" || plain.FlagName() != "patterns" {

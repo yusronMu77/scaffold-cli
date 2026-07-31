@@ -41,7 +41,7 @@ func ResolveFrameworkPath(scaffoldingCodeRoot, name string) (string, error) {
 
 // ValidateSegment rejects a value that would escape the directory it is joined onto. Every value
 // that reaches filepath.Join from CLI input or from a registry `path` must pass through here:
-// PRD v1.8 Section 8.3 requires <name>, selector values and axis values to be single path
+// PRD Section 8.3 requires <name>, selector values and axis values to be single path
 // segments. Without this check, `create fw services ../../pwned` resolved its write target to
 // ..\..\pwned - straight through fundamental rule #7's "never writes outside <output>/<name>"
 // guarantee (design review 2026-07-27 section 2.4), and a selector value could walk clean out of
@@ -159,7 +159,7 @@ func compareVersions(a, b string) int {
 // required base axis (PRD Section 5); every other one is an optional overlay axis, whatever it's
 // named.
 //
-// The three identities of PRD v1.8 Section 4.1 are all carried here, and callers must use the
+// The three identities of PRD Section 4.1 are all carried here, and callers must use the
 // right one. Carrying only Name is what silently broke `path` aliasing end-to-end: DiscoverAxes
 // resolved the alias internally to read the axis's values, then discarded it, and both commands
 // rebuilt the path as filepath.Join(versionPath, Name) - so `list` worked while `create` failed
@@ -381,7 +381,7 @@ type SelectorStep struct {
 
 // ChainNode is one node visited on the way down to the leaf, in root-to-leaf order.
 //
-// PRD v1.8 Section 7 lets intermediate selector nodes contribute files and dependencies, merged
+// PRD Section 7 lets intermediate selector nodes contribute files and dependencies, merged
 // root-to-leaf with deeper nodes winning. Without that, services/web/rest-http/ and
 // services/web/grpc/ each need a full copy of the Spring Boot skeleton - 5-6 duplicates that must
 // then be kept in sync by hand, which is the opposite of this project's purpose (design review
@@ -424,13 +424,15 @@ func WalkCategory(templatesPath, category string, selections map[string]string) 
 		}
 		chain = append(chain, ChainNode{Dir: currentDir, Manifest: m})
 
-		// A node on the chain must be navigable: either a selector to descend through or a leaf
-		// to render. A registry, an empty manifest, or one with a misspelled `selector` key used
-		// to slip through as a renderable leaf and produce an empty project silently.
+		// A registry manifest on a category's chain means the walk has gone somewhere it should
+		// not be - it neither descends nor renders.
 		if err := m.RequireNavigable(filepath.Join(currentDir, "manifest.yaml")); err != nil {
 			return nil, fmt.Errorf("category %q: %w", category, err)
 		}
-		if m.IsLeaf() {
+		// Anything that isn't a selector ends the walk. That includes a manifest declaring
+		// nothing of its own: under the inheritance model such a leaf is entirely made of what
+		// the levels above it contribute, which is a legitimate and useful shape.
+		if m.Shape() != manifest.ShapeSelector {
 			return &WalkResult{Leaf: m, LeafDir: currentDir, Steps: steps, Chain: chain}, nil
 		}
 
@@ -581,7 +583,19 @@ func describeTreeAt(dir, name string) (*TreeNode, error) {
 	// Previously this was a raw directory listing at every level.
 	if len(m.Values) > 0 {
 		for _, entry := range m.Values {
-			child, err := describeTreeAt(filepath.Join(dir, entry.DirName()), entry.Name)
+			childDir := filepath.Join(dir, entry.DirName())
+			// A registered value whose folder has no manifest is a real data error, but `list` is
+			// a browsing command: killing the whole tree because one branch is unfinished would
+			// hide everything else. Report it in place instead - loud, but not fatal. `create`
+			// still fails hard on the same value, which is where it matters.
+			if _, statErr := os.Stat(filepath.Join(childDir, "manifest.yaml")); statErr != nil {
+				node.Children = append(node.Children, TreeNode{
+					Value:  entry.Name + "  (registered, but no manifest.yaml yet)",
+					IsLeaf: true,
+				})
+				continue
+			}
+			child, err := describeTreeAt(childDir, entry.Name)
 			if err != nil {
 				return nil, err
 			}

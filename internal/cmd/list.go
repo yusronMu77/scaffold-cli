@@ -25,9 +25,37 @@ func newListCommand() *cobra.Command {
 }
 
 func runList(cmd *cobra.Command, rawArgs []string) error {
-	args := parseArgs(rawArgs)
+	args, err := parseArgs(rawArgs)
+	if err != nil {
+		return err
+	}
 	if args.help {
 		return cmd.Help()
+	}
+	// A values file is honoured here too, so the same file that drives `create` can be used to
+	// browse what it would select without repeating the framework name.
+	//
+	// Keys from the file are marked consumed up front, unlike in `create`. A file written for
+	// `create` legitimately carries keys `list` has no use for (--package, --entity, ...), and
+	// rejecting them would defeat the point of sharing one file. Nothing is lost: the unknown-key
+	// check exists to catch a name the user just mistyped, and a typo in the file is still caught
+	// by `create`, where it would actually change the output.
+	if len(args.valuesFiles) > 0 {
+		values, err := loadValuesFiles(args.valuesFiles)
+		if err != nil {
+			return err
+		}
+		for k, v := range values {
+			if _, fromCLI := args.flags[k]; !fromCLI {
+				args.flags[k] = v
+			}
+			args.markConsumed(k)
+		}
+		for _, key := range []string{keyFramework, keyCategory} {
+			if len(args.positional) < 2 && args.flags[key] != "" {
+				args.positional = append(args.positional, args.flags[key])
+			}
+		}
 	}
 	if len(args.positional) > 2 {
 		return fmt.Errorf("usage: scaffold list [<framework>] [<category>]\n"+
@@ -57,13 +85,16 @@ func runList(cmd *cobra.Command, rawArgs []string) error {
 	versionPath := filepath.Join(frameworkPath, version)
 
 	args.markConsumed(engineFlags...)
-	if err := args.requireAllFlagsConsumed([]string{"fw-version", "scaffolding-code"}); err != nil {
-		return err
-	}
-
 	if len(args.positional) == 1 {
+		if err := args.requireAllFlagsConsumed([]string{"fw-version", "scaffolding-code"}); err != nil {
+			return err
+		}
 		return listFrameworkDetail(out, framework, frameworkPath, version, versionPath)
 	}
+
+	// With a category given, selector flags are legitimate: they narrow which leaf's variables to
+	// show. Which ones are valid is only knowable after resolving the chain, so the unknown-flag
+	// check happens further down, once the plan has told us.
 
 	axes, err := discovery.DiscoverAxes(versionPath)
 	if err != nil {
@@ -86,6 +117,67 @@ func runList(cmd *cobra.Command, rawArgs []string) error {
 	}
 	fmt.Fprintf(out, "%s %s %s/%s:\n", framework, version, baseAxis.Name, category)
 	printTree(out, tree, "  ")
+
+	// Then the part that was missing entirely: what you can actually set.
+	//
+	// The selector tree alone tells you nothing about --package or --entity, so the only way to
+	// discover them was to open the manifests one by one. Resolving the same plan `create` would
+	// build means the answer here can never drift from what `create` accepts.
+	return printVariables(out, args, scaffoldingCodeRoot, framework, category)
+}
+
+// printVariables resolves the chain the way `create` would and lists the variables it declares.
+// Failure is silent on purpose: `list` is a browsing command, and a chain that cannot resolve yet
+// (an unbuilt branch, a selector left unset) should still show the tree above rather than replace
+// it with an error. `create` and `lint` are where an unresolvable chain must be loud.
+func printVariables(out io.Writer, args *parsedArgs, root, framework, category string) error {
+	probe := &parsedArgs{flags: args.flags, consumed: map[string]bool{}}
+	p, err := resolvePlan(probe, root, framework, category, "<name>")
+	if err != nil {
+		// Most often this just means a selector with no default is unset, so the chain has not
+		// reached a leaf yet. Say which flag would get there rather than printing nothing - the
+		// tree above already showed the choices, and this connects the two.
+		fmt.Fprintf(out, "\nPick a leaf to see the variables it declares:\n  %s\n", err)
+		return nil
+	}
+
+	// Now that the plan is resolved, the valid flag set is known - so a typo can finally be caught
+	// here too, instead of `list` accepting anything.
+	probe.markConsumed(engineFlags...)
+	if err := probe.requireAllFlagsConsumed(validFlagsFor(p.Axes, p.Walk, p.Manifests)); err != nil {
+		return err
+	}
+
+	vars := declaredVariables(p)
+	if len(vars) == 0 {
+		return nil
+	}
+
+	fmt.Fprintf(out, "\nVariables for %s", category)
+	if len(p.Walk.Steps) > 0 {
+		for _, s := range p.Walk.Steps {
+			fmt.Fprintf(out, " --%s=%s", s.Flag, s.Value)
+			if s.Defaulted {
+				fmt.Fprint(out, "(default)")
+			}
+		}
+	}
+	fmt.Fprintln(out, ":")
+
+	for _, v := range vars {
+		required := ""
+		if v.Required && v.Default == "" {
+			required = "  (required)"
+		}
+		def := v.Default
+		if def == "" && !v.Required {
+			def = "-"
+		}
+		fmt.Fprintf(out, "  --%-22s %-22s from %s%s\n", v.Flag, def, v.From, required)
+		if v.Prompt != "" {
+			fmt.Fprintf(out, "  %-24s %s\n", "", v.Prompt)
+		}
+	}
 	return nil
 }
 

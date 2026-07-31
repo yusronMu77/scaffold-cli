@@ -7,7 +7,7 @@ import (
 )
 
 func TestParseArgs_PositionalOnly(t *testing.T) {
-	got := parseArgs([]string{"spring-boot", "services", "payment-service"})
+	got := mustParseArgs(t, []string{"spring-boot", "services", "payment-service"})
 	want := []string{"spring-boot", "services", "payment-service"}
 	if !reflect.DeepEqual(got.positional, want) {
 		t.Errorf("expected positional %v, got %v", want, got.positional)
@@ -18,19 +18,19 @@ func TestParseArgs_PositionalOnly(t *testing.T) {
 }
 
 func TestParseArgs_EqualsForm(t *testing.T) {
-	got := parseArgs([]string{"--function=web", "--protocol=rest-http"})
+	got := mustParseArgs(t, []string{"--function=web", "--protocol=rest-http"})
 	want := map[string]string{"function": "web", "protocol": "rest-http"}
 	if !reflect.DeepEqual(got.flags, want) {
 		t.Errorf("expected flags %v, got %v", want, got.flags)
 	}
 }
 
-// PRD v1.8 Section 8.1: a flag with no "=" is a boolean set to true, and it must NOT swallow the
+// PRD Section 8.1: a flag with no "=" is a boolean set to true, and it must NOT swallow the
 // following token. Before this, `--dry-run payment-svc` consumed "payment-svc" as the flag's
 // value, so the artefact silently got named after the category instead (design review section
 // 2.10).
 func TestParseArgs_BareFlagIsBooleanAndDoesNotEatNextToken(t *testing.T) {
-	got := parseArgs([]string{"fw", "services", "--dry-run", "payment-svc"})
+	got := mustParseArgs(t, []string{"fw", "services", "--dry-run", "payment-svc"})
 
 	wantPositional := []string{"fw", "services", "payment-svc"}
 	if !reflect.DeepEqual(got.positional, wantPositional) {
@@ -44,7 +44,7 @@ func TestParseArgs_BareFlagIsBooleanAndDoesNotEatNextToken(t *testing.T) {
 // The two-token form is deliberately unsupported: "--function web" leaves "web" positional rather
 // than guessing it is the value.
 func TestParseArgs_SpaceSeparatedFormNotSupported(t *testing.T) {
-	got := parseArgs([]string{"--function", "web"})
+	got := mustParseArgs(t, []string{"--function", "web"})
 
 	if v := got.flags["function"]; v != "true" {
 		t.Errorf(`expected --function to parse as boolean "true", got %q`, v)
@@ -57,14 +57,14 @@ func TestParseArgs_SpaceSeparatedFormNotSupported(t *testing.T) {
 // A flag whose value is itself flag-shaped stays intact, because the value comes from the "="
 // split rather than from the next token.
 func TestParseArgs_FlagValueLookingLikeAFlag(t *testing.T) {
-	got := parseArgs([]string{"--function=--protocol"})
+	got := mustParseArgs(t, []string{"--function=--protocol"})
 	if v := got.flags["function"]; v != "--protocol" {
 		t.Errorf(`expected flags["function"]="--protocol", got %q`, v)
 	}
 }
 
 func TestParseArgs_Mixed(t *testing.T) {
-	got := parseArgs([]string{
+	got := mustParseArgs(t, []string{
 		"spring-boot", "services", "payment-service",
 		"--function=web", "--protocol=rest-http", "--style=microservice",
 	})
@@ -80,14 +80,14 @@ func TestParseArgs_Mixed(t *testing.T) {
 
 func TestParseArgs_HelpDetected(t *testing.T) {
 	for _, arg := range []string{"--help", "--h"} {
-		if !parseArgs([]string{arg}).help {
+		if !mustParseArgs(t, []string{arg}).help {
 			t.Errorf("expected %q to set help", arg)
 		}
 	}
 }
 
 func TestRequireAllFlagsConsumed_ReportsUnknownFlags(t *testing.T) {
-	args := parseArgs([]string{"--function=web", "--stlye=microservice"})
+	args := mustParseArgs(t, []string{"--function=web", "--stlye=microservice"})
 	args.get("function")
 
 	err := args.requireAllFlagsConsumed([]string{"function", "style"})
@@ -103,10 +103,54 @@ func TestRequireAllFlagsConsumed_ReportsUnknownFlags(t *testing.T) {
 }
 
 func TestRequireAllFlagsConsumed_PassesWhenAllUsed(t *testing.T) {
-	args := parseArgs([]string{"--function=web", "--help"})
+	args := mustParseArgs(t, []string{"--function=web", "--help"})
 	args.get("function")
 
 	if err := args.requireAllFlagsConsumed([]string{"function"}); err != nil {
 		t.Errorf("expected no error (--help is never an unknown flag), got: %v", err)
+	}
+}
+
+// mustParseArgs is parseArgs for the many tests that pass syntactically valid input.
+func mustParseArgs(t *testing.T, args []string) *parsedArgs {
+	t.Helper()
+	got, err := parseArgs(args)
+	if err != nil {
+		t.Fatalf("parseArgs(%v): %v", args, err)
+	}
+	return got
+}
+
+// -f is the one documented exception to "no two-token flags" (PRD Section 8.2): it belongs to the
+// engine, so the parser knows in advance that it takes a value.
+func TestParseArgs_ValuesFileSpellings(t *testing.T) {
+	for _, args := range [][]string{
+		{"-f", "values.yaml"},
+		{"-f=values.yaml"},
+		{"--values=values.yaml"},
+		{"--values", "values.yaml"},
+	} {
+		got := mustParseArgs(t, args)
+		if len(got.valuesFiles) != 1 || got.valuesFiles[0] != "values.yaml" {
+			t.Errorf("%v: expected one values file, got %v", args, got.valuesFiles)
+		}
+		if len(got.positional) != 0 {
+			t.Errorf("%v: the value must not leak into positionals, got %v", args, got.positional)
+		}
+	}
+}
+
+// Repeatable, so a base file can be layered with an environment-specific one.
+func TestParseArgs_ValuesFileRepeatable(t *testing.T) {
+	got := mustParseArgs(t, []string{"-f", "base.yaml", "-f", "prod.yaml"})
+	if len(got.valuesFiles) != 2 || got.valuesFiles[1] != "prod.yaml" {
+		t.Errorf("expected both files in order, got %v", got.valuesFiles)
+	}
+}
+
+// A dangling -f must complain rather than silently swallow the next positional.
+func TestParseArgs_ValuesFileWithoutValueIsAnError(t *testing.T) {
+	if _, err := parseArgs([]string{"create", "-f"}); err == nil {
+		t.Fatal("expected a dangling -f to error, got nil")
 	}
 }
