@@ -1,6 +1,7 @@
 package render
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"path"
@@ -11,26 +12,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Merge combines the per-source rendered trees into the final tree (PRD Section 6 step 6).
-//
-// Sources arrive already rendered, so collisions are keyed on the post-substitution path - the
-// only key that is correct, since two sources can produce paths that differ before substitution
-// and match after it.
-//
-// Ordering: the caller passes sources in application order (required base axis first, then
-// overlays by ascending merge_priority). A later source wins a collision, except for paths marked
-// merge_yaml, which are deep-merged instead of replaced.
+// Merge combines the per-source rendered trees into the final tree. Collisions are keyed on the
+// post-substitution path; a later source wins, except for paths marked merge_yaml, which are
+// deep-merged instead of replaced.
 func Merge(trees [][]File) ([]File, error) {
 	files, _, err := MergeExplained(trees)
 	return files, err
 }
 
-// Contribution records one source's effect on one output path, for `--explain`.
-//
-// In a chain seven levels deep, "why is my file not what I wrote?" is a routine question, and the
-// merge result alone cannot answer it: the winner looks identical whether nothing else touched the
-// path or four other levels did. Keeping the record costs nothing and turns a guessing game into a
-// listing.
+// Contribution records one source's effect on one output path, used by `--explain` to show why a
+// merged file ended up the way it did.
 type Contribution struct {
 	Source string
 	// Action is "added", "overrode" or "merged".
@@ -80,16 +71,10 @@ func MergeExplained(trees [][]File) ([]File, map[string][]Contribution, error) {
 	return out, contributions, nil
 }
 
-// Exclude drops files whose output path matches any pattern, completing the set of three things a
-// level can do to what it inherits: add, override, remove (PRD Section 7.3).
-//
-// Patterns are matched against the output path with `**` meaning "any number of segments", so
-// "src/test/**/ApplicationTests.java" catches the file wherever the package layout puts it.
-// Matching is done after the merge, on the same paths collisions are keyed on.
-//
-// A pattern matching nothing is an error: it is almost always a stale exclusion left behind after
-// the file it referred to was renamed or moved, and silently ignoring it would leave the template
-// author believing a file is still being dropped when it is not (fundamental rule #8).
+// Exclude drops files whose output path matches any pattern, applied after the merge on the same
+// paths collisions are keyed on. Patterns support `**` meaning "any number of segments". A pattern
+// matching nothing is an error, since it usually means the file it referred to was renamed or
+// moved.
 func Exclude(files []File, patterns []string) ([]File, error) {
 	if len(patterns) == 0 {
 		return files, nil
@@ -160,14 +145,8 @@ func matchPath(pattern, name string) (bool, error) {
 }
 
 // mergeStructured deep-merges two documents, choosing the parser from the output path's extension.
-//
-// The merge RULES are the same whatever the format, and are fixed by PRD Section 6 so the result
-// is predictable rather than clever: maps merge recursively, arrays are replaced wholesale
-// (appending would silently duplicate entries every time an overlay is applied), an explicit null
-// deletes the key, and depth is unlimited.
-//
-// Only the encoding differs per format, which is why adding TOML later is a codec entry rather
-// than a second merge implementation.
+// Maps merge recursively, arrays are replaced wholesale, an explicit null deletes the key, and
+// depth is unlimited; only the encoding differs per format.
 func mergeStructured(path string, base, override []byte) ([]byte, error) {
 	codec, err := codecFor(path)
 	if err != nil {
@@ -190,8 +169,7 @@ type codec struct {
 }
 
 // codecFor picks the parser by extension. An unrecognised extension is an error rather than a
-// silent fall-back to whole-file replacement: the manifest asked for a merge, and quietly not
-// doing one is exactly the kind of silent wrong answer rule #8 forbids.
+// silent fall-back to whole-file replacement.
 func codecFor(path string) (codec, error) {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".yml", ".yaml":
@@ -205,11 +183,16 @@ func codecFor(path string) (codec, error) {
 			name:      "JSON",
 			unmarshal: func(b []byte, v any) error { return json.Unmarshal(b, v) },
 			marshal: func(v any) ([]byte, error) {
-				out, err := json.MarshalIndent(v, "", "  ")
-				if err != nil {
+				// HTML escaping is off (via Encoder, not json.MarshalIndent), since the default
+				// escapes characters like < and > and would mangle npm version ranges.
+				var buf bytes.Buffer
+				enc := json.NewEncoder(&buf)
+				enc.SetEscapeHTML(false)
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(v); err != nil {
 					return nil, err
 				}
-				return append(out, '\n'), nil
+				return buf.Bytes(), nil // Encode already appends a newline
 			},
 		}, nil
 	default:

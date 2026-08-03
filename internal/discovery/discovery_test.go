@@ -7,20 +7,20 @@ import (
 	"testing"
 )
 
-// writeFixtureManifest writes a manifest.yaml at dir/manifest.yaml, creating dir if needed.
+// writeFixtureManifest writes a jig.yaml at dir/jig.yaml, creating dir if needed.
 func writeFixtureManifest(t *testing.T, dir, content string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("creating fixture dir %s: %v", dir, err)
 	}
-	path := filepath.Join(dir, "manifest.yaml")
+	path := filepath.Join(dir, "jig.yaml")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("writing fixture manifest %s: %v", path, err)
+		t.Fatalf("writing fixture jig %s: %v", path, err)
 	}
 }
 
-// buildFixtureTree mimics scaffolding-code/<framework>/<version>/ with three contrasting
-// category depths (parent=0, libs=1, services=2), plus a patterns axis, matching PRD Section 4.
+// buildFixtureTree mimics scaffolding-code/<framework>/<version>/ with three category depths
+// (parent=0, libs=1, services=2) plus a patterns axis.
 func buildFixtureTree(t *testing.T) (versionPath string) {
 	t.Helper()
 	root := t.TempDir()
@@ -31,7 +31,6 @@ func buildFixtureTree(t *testing.T) (versionPath string) {
 	writeFixtureManifest(t, filepath.Join(templatesPath, "parent"), `
 name: "Parent POM"
 description: "Static parent pom.xml"
-type: "library"
 variables:
   - name: "ProjectName"
     prompt: "Nama project"
@@ -50,7 +49,6 @@ selector: "category"
 	writeFixtureManifest(t, filepath.Join(templatesPath, "libs", "starter"), `
 name: "Starter Lib"
 description: "Starter library leaf"
-type: "library"
 files:
   - path: "pom.xml"
     template: true
@@ -87,7 +85,6 @@ default: "rest-http"
 	writeFixtureManifest(t, filepath.Join(templatesPath, "services", "web", "rest-http"), `
 name: "REST HTTP Service"
 description: "Spring Boot REST service"
-type: "service"
 files:
   - path: "pom.xml"
     template: true
@@ -100,7 +97,6 @@ dependencies:
 	writeFixtureManifest(t, filepath.Join(versionPath, "patterns", "microservice"), `
 name: "Microservice"
 description: "Microservice architecture overlay"
-type: "pattern"
 dependencies:
   - groupId: "org.springframework.cloud"
     artifactId: "spring-cloud-starter-openfeign"
@@ -111,8 +107,8 @@ dependencies:
 
 func writeRootManifest(t *testing.T, root, content string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(root, "manifest.yaml"), []byte(content), 0o644); err != nil {
-		t.Fatalf("writing root manifest fixture: %v", err)
+	if err := os.WriteFile(filepath.Join(root, "jig.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("writing root jig fixture: %v", err)
 	}
 }
 
@@ -217,8 +213,8 @@ func TestResolveVersion_RegistryDefaultWinsOverHighest(t *testing.T) {
 			t.Fatalf("creating version dir: %v", err)
 		}
 	}
-	// "3.2.x" is marked default even though "3.10.x" would numerically sort higher - the
-	// explicit registry default must win, same as everywhere else this pattern is used.
+	// "3.2.x" is marked default even though "3.10.x" sorts higher numerically; the explicit
+	// registry default must win.
 	writeFixtureManifest(t, frameworkPath, `
 name: "Spring Boot"
 values:
@@ -262,10 +258,8 @@ values:
 	}
 }
 
-// PRD Section 4.1: the registry is authoritative for explicitly-typed values too, not just
-// for defaults. Previously an explicit --fw-version was returned untouched, so a typo surfaced
-// much later as "cannot find the file" naming a path the user never typed (design review section
-// 2.12).
+// The registry is authoritative for explicitly-typed versions too, not just defaults, so a typo
+// in --fw-version is rejected immediately rather than surfacing later as a confusing file error.
 func TestResolveVersion_ExplicitRejectedWhenUnregistered(t *testing.T) {
 	frameworkPath := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(frameworkPath, "9.9.9"), 0o755); err != nil {
@@ -351,7 +345,7 @@ func TestDiscoverAxes(t *testing.T) {
 func TestDiscoverAxes_DescriptionOptional(t *testing.T) {
 	versionPath := t.TempDir()
 
-	// "templates" has its own descriptive manifest.yaml.
+	// "templates" has its own descriptive jig.yaml.
 	writeFixtureManifest(t, filepath.Join(versionPath, "templates"), `
 name: "Templates"
 description: "Base axis describing what to generate"
@@ -360,7 +354,7 @@ description: "Base axis describing what to generate"
 		t.Fatalf("creating category dir: %v", err)
 	}
 
-	// "patterns" has no manifest.yaml at all - must not error, just leave Description empty.
+	// "patterns" has no jig.yaml at all - must not error, just leave Description empty.
 	if err := os.MkdirAll(filepath.Join(versionPath, "patterns"), 0o755); err != nil {
 		t.Fatalf("creating patterns dir: %v", err)
 	}
@@ -376,19 +370,18 @@ description: "Base axis describing what to generate"
 	}
 
 	if byName["templates"].Description != "Base axis describing what to generate" {
-		t.Errorf("expected templates axis description to be read from its manifest.yaml, got %q", byName["templates"].Description)
+		t.Errorf("expected templates axis description to be read from its jig.yaml, got %q", byName["templates"].Description)
 	}
 	if byName["patterns"].Description != "" {
-		t.Errorf("expected patterns axis (no manifest.yaml) to have empty description, got %q", byName["patterns"].Description)
+		t.Errorf("expected patterns axis (no jig.yaml) to have empty description, got %q", byName["patterns"].Description)
 	}
 }
 
 func TestDiscoverAxes_ValuesRegistryOverridesDirectoryListing(t *testing.T) {
 	versionPath := t.TempDir()
 
-	// templates/ has an explicit values: registry naming a CLI alias "svc" -> folder
-	// "services", plus a stray extra directory that must NOT show up (registry is
-	// authoritative once present, per fundamental rule #2).
+	// templates/ has an explicit values: registry aliasing CLI name "svc" to folder "services";
+	// a stray extra directory must not show up since the registry is authoritative once present.
 	writeFixtureManifest(t, filepath.Join(versionPath, "templates"), `
 name: "Templates"
 values:
@@ -430,7 +423,7 @@ required: true
 	if err := os.MkdirAll(filepath.Join(versionPath, "base", "services"), 0o755); err != nil {
 		t.Fatalf("creating category dir: %v", err)
 	}
-	// A sibling axis that must NOT be required, even though it has a manifest.
+	// A sibling axis that must NOT be required, even though it has a jig.
 	writeFixtureManifest(t, filepath.Join(versionPath, "extras"), `
 name: "Extras"
 `)
@@ -445,7 +438,7 @@ name: "Extras"
 		byName[a.Name] = a
 	}
 	if !byName["base"].Required {
-		t.Error("expected the 'base' folder (required: true in its manifest) to be Required, regardless of its name")
+		t.Error("expected the 'base' folder (required: true in its jig) to be Required, regardless of its name")
 	}
 	if byName["extras"].Required {
 		t.Error("expected 'extras' (no required field, not named templates) to NOT be required")
@@ -455,8 +448,8 @@ name: "Extras"
 func TestDiscoverAxes_RequiredFallsBackToTemplatesName(t *testing.T) {
 	versionPath := t.TempDir()
 
-	// No manifest.yaml at all under "templates" - must still fall back to the name-based
-	// default, for backward compatibility with setups that don't declare `required` at all.
+	// No jig.yaml under "templates" - must still fall back to the name-based default, for
+	// backward compatibility.
 	if err := os.MkdirAll(filepath.Join(versionPath, "templates", "services"), 0o755); err != nil {
 		t.Fatalf("creating category dir: %v", err)
 	}
@@ -473,8 +466,8 @@ func TestDiscoverAxes_RequiredFallsBackToTemplatesName(t *testing.T) {
 func TestDiscoverAxes_VersionRegistryOverridesDirectoryListing(t *testing.T) {
 	versionPath := t.TempDir()
 
-	// The version itself now registers which axes exist, same registry pattern as every
-	// other level - a stray unregistered folder must not show up once this file is present.
+	// The version itself registers which axes exist; a stray unregistered folder must not show
+	// up once this file is present.
 	writeFixtureManifest(t, versionPath, `
 name: "Spring Boot 3.2.x"
 values:
@@ -509,18 +502,17 @@ name: "Patterns"
 		byName[a.Name] = a
 	}
 	if _, ok := byName["stray"]; ok {
-		t.Error("expected the unregistered 'stray' folder to be excluded once a version-level manifest.yaml exists")
+		t.Error("expected the unregistered 'stray' folder to be excluded once a version-level jig.yaml exists")
 	}
 	if !byName["templates"].Required {
-		t.Error("expected 'templates' axis to still read Required from its own manifest.yaml")
+		t.Error("expected 'templates' axis to still read Required from its own jig.yaml")
 	}
 }
 
 func TestDiscoverAxes_VersionRegistryPathAlias(t *testing.T) {
 	versionPath := t.TempDir()
 
-	// "base" is the CLI-facing axis name, aliased to the actual "templates" folder - same
-	// path-aliasing mechanism as frameworks/versions/categories.
+	// "base" is the CLI-facing axis name, aliased to the actual "templates" folder.
 	writeFixtureManifest(t, versionPath, `
 name: "Spring Boot 3.2.x"
 values:
@@ -646,7 +638,7 @@ func TestWalkCategory_MissingSelectionUsesDefault(t *testing.T) {
 	versionPath := buildFixtureTree(t)
 	templatesPath := filepath.Join(versionPath, "templates")
 
-	// --protocol omitted - services/web/manifest.yaml declares default: "rest-http".
+	// --protocol omitted - services/web/jig.yaml declares default: "rest-http".
 	result, err := WalkCategory(templatesPath, "services", map[string]string{"function": "web"})
 	if err != nil {
 		t.Fatalf("expected default to kick in for --protocol, got error: %v", err)
@@ -664,7 +656,7 @@ func TestWalkCategory_MissingSelectionNoDefaultErrors(t *testing.T) {
 	versionPath := buildFixtureTree(t)
 	templatesPath := filepath.Join(versionPath, "templates")
 
-	// libs/manifest.yaml has selector "category" but no default set - must still error.
+	// libs/jig.yaml has selector "category" but no default set - must still error.
 	_, err := WalkCategory(templatesPath, "libs", map[string]string{})
 	if err == nil {
 		t.Fatal("expected an error when --category is missing and no default is set, got nil")
@@ -680,7 +672,7 @@ func TestDefaultCategory(t *testing.T) {
 		t.Fatalf("DefaultCategory returned error: %v", err)
 	}
 	if got != "services" {
-		t.Errorf("expected default category 'services' (from templates/manifest.yaml), got %q", got)
+		t.Errorf("expected default category 'services' (from templates/jig.yaml), got %q", got)
 	}
 }
 
@@ -693,12 +685,12 @@ description: "No default set"
 
 	_, err := DefaultCategory(templatesPath)
 	if err == nil {
-		t.Fatal("expected an error when templates/manifest.yaml has no default field, got nil")
+		t.Fatal("expected an error when templates/jig.yaml has no default field, got nil")
 	}
 }
 
 func TestDefaultCategory_FallsBackToLegacyStringDefault(t *testing.T) {
-	// A templates/manifest.yaml with no `values:` list at all, just the older bare
+	// A templates/jig.yaml with no `values:` list at all, just the older bare
 	// `default: "<name>"` string - DefaultCategory must still honor it.
 	templatesPath := t.TempDir()
 	writeFixtureManifest(t, templatesPath, `
@@ -717,11 +709,9 @@ default: "services"
 }
 
 func TestDefaultCategory_And_ResolveCategoryDir_PathOverride(t *testing.T) {
-	// A values: entry can alias its CLI-facing name to a different on-disk folder, exactly
-	// like the framework registry's path field. DefaultCategory returns the CLI-facing name
-	// (matching what a user would type); ResolveCategoryDir is the separate step that turns
-	// that name into the actual folder to walk into - same two-step shape as
-	// ResolveFrameworkPath's registry lookup.
+	// A values: entry can alias its CLI-facing name to a different on-disk folder.
+	// DefaultCategory returns the CLI-facing name; ResolveCategoryDir resolves that name to the
+	// actual folder.
 	templatesPath := t.TempDir()
 	writeFixtureManifest(t, templatesPath, `
 name: "Templates"
@@ -750,8 +740,8 @@ values:
 }
 
 func TestResolveCategoryDir_NoRegistryFallsBackToNameAsIs(t *testing.T) {
-	// No templates/manifest.yaml at all - name is used directly, preserving
-	// plain-directory-listing behavior for setups with no explicit registry.
+	// No templates/jig.yaml at all - name is used directly, preserving plain-directory-listing
+	// behavior.
 	templatesPath := t.TempDir()
 
 	got, err := ResolveCategoryDir(templatesPath, "services")
@@ -764,7 +754,7 @@ func TestResolveCategoryDir_NoRegistryFallsBackToNameAsIs(t *testing.T) {
 }
 
 // With a registry present it is authoritative: an unregistered category is rejected rather than
-// passed through to the filesystem (fundamental rule #2).
+// passed through to the filesystem.
 func TestResolveCategoryDir_RegistryRejectsUnregisteredCategory(t *testing.T) {
 	templatesPath := t.TempDir()
 	writeFixtureManifest(t, templatesPath, `
@@ -869,13 +859,11 @@ func TestDescribeTree_Services_TwoLevels(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Regression tests for the 2026-07-27 design review (see notes/2026-07-27-design-review-*.md).
-// Each of these reproduced a deviation that previously succeeded silently with exit code 0.
+// Regression tests: each of these reproduced a deviation that previously succeeded silently.
 // ---------------------------------------------------------------------------------------------
 
-// Section 2.2: DiscoverAxes resolved an axis's `path` alias internally and then discarded it, so
-// callers rebuilt the path from Name and read a folder the registry had aliased away. `list`
-// worked (it used the resolved path) while `create` failed. Axis.Dir/Axis.Path now carry it.
+// DiscoverAxes carries the resolved `path` alias on Axis.Dir/Axis.Path, so callers don't rebuild
+// the path from Name and read the wrong folder.
 func TestDiscoverAxes_AxisCarriesResolvedDirAndFlag(t *testing.T) {
 	versionPath := t.TempDir()
 	writeFixtureManifest(t, versionPath, `
@@ -933,9 +921,8 @@ func TestDiscoverAxes_FlagDefaultsToName(t *testing.T) {
 	}
 }
 
-// Section 2.8: the "templates" name fallback was evaluated per axis rather than once, so a
-// folder named templates/ alongside an axis declaring required:true produced TWO required axes,
-// and RequiredAxis silently returned whichever came first.
+// The "templates" name fallback is evaluated once, not per axis, so it can't produce two
+// required axes when another axis explicitly declares required:true.
 func TestDiscoverAxes_NameFallbackSuppressedByExplicitRequired(t *testing.T) {
 	versionPath := t.TempDir()
 	writeFixtureManifest(t, versionPath, "name: v\nvalues:\n  - name: \"templates\"\n  - name: \"base\"\n")
@@ -979,8 +966,8 @@ func TestRequiredAxis_MultipleRequiredIsAnError(t *testing.T) {
 	}
 }
 
-// Section 2.6: WalkCategory validated a selector value with os.Stat alone, so a folder that the
-// node's own `values:` registry never listed was still selectable.
+// WalkCategory must reject a selector value not listed in the node's own `values:` registry,
+// not just any folder that happens to exist on disk.
 func TestWalkCategory_RegistryRejectsUnregisteredSelectorValue(t *testing.T) {
 	templatesPath := t.TempDir()
 	writeFixtureManifest(t, filepath.Join(templatesPath, "services"), `
@@ -1005,8 +992,8 @@ values:
 	}
 }
 
-// Section 2.5: a selector value went straight into filepath.Join, so "../../patterns/x" walked
-// clean out of the base axis into a sibling one.
+// A selector value must not be able to escape the category via path traversal
+// (e.g. "../../patterns/x").
 func TestWalkCategory_SelectorValueCannotEscapeTheCategory(t *testing.T) {
 	templatesPath := t.TempDir()
 	writeFixtureManifest(t, filepath.Join(templatesPath, "services"), "name: S\nselector: function\n")
@@ -1020,28 +1007,23 @@ func TestWalkCategory_SelectorValueCannotEscapeTheCategory(t *testing.T) {
 	}
 }
 
-// Section 2.9: a registry manifest has no `selector`, so the old IsLeaf() = !IsSelector() call
-// classified it as a renderable leaf and generated an empty project without complaining.
+// A registry jig (no `selector`) must not be treated as a renderable leaf on the selector chain.
 func TestWalkCategory_RegistryManifestIsNotARenderableLeaf(t *testing.T) {
 	templatesPath := t.TempDir()
 	writeFixtureManifest(t, filepath.Join(templatesPath, "services"), "name: S\nvalues:\n  - name: web\n")
 
 	_, err := WalkCategory(templatesPath, "services", nil)
 	if err == nil {
-		t.Fatal("expected a registry manifest on the selector chain to be rejected, got nil")
+		t.Fatal("expected a registry jig on the selector chain to be rejected, got nil")
 	}
 	if !strings.Contains(err.Error(), "registry") {
 		t.Errorf("expected the error to explain it is a registry, got: %v", err)
 	}
 }
 
-// A manifest that declares nothing of its own ends the walk as a leaf, because under the
-// inheritance model its content legitimately comes entirely from the levels above it.
-//
-// This is also what a misspelled `selector` key looks like, and the two are indistinguishable
-// from the manifest alone. Erroring here would make pure-inheritance leaves impossible, so the
-// typo is caught elsewhere and just as loudly: the flags intended for the missing selector are
-// rejected as unknown, and a chain that renders no files fails at write time.
+// A jig with no content of its own ends the walk as a leaf, since under inheritance its content
+// can come entirely from levels above. This looks identical to a misspelled `selector`, but that
+// mistake is caught elsewhere instead.
 func TestWalkCategory_ManifestWithNoContentIsAnInheritingLeaf(t *testing.T) {
 	templatesPath := t.TempDir()
 	writeFixtureManifest(t, filepath.Join(templatesPath, "services"), "name: S\n")
@@ -1058,14 +1040,14 @@ func TestWalkCategory_ManifestWithNoContentIsAnInheritingLeaf(t *testing.T) {
 	}
 }
 
-// Section 2.7: four call sites treated every manifest.Load error as "file absent", so a
-// malformed registry silently downgraded to raw directory listing and changed what got generated.
+// A malformed registry must be a hard error, not silently treated as absent and fall back to
+// directory listing.
 func TestDiscoverAxes_MalformedRegistryIsAnErrorNotAFallback(t *testing.T) {
 	versionPath := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(versionPath, "templates"), 0o755); err != nil {
 		t.Fatalf("creating dir: %v", err)
 	}
-	bad := filepath.Join(versionPath, "manifest.yaml")
+	bad := filepath.Join(versionPath, "jig.yaml")
 	if err := os.WriteFile(bad, []byte("values: [ this is : not : valid yaml"), 0o644); err != nil {
 		t.Fatalf("writing fixture: %v", err)
 	}
@@ -1075,8 +1057,8 @@ func TestDiscoverAxes_MalformedRegistryIsAnErrorNotAFallback(t *testing.T) {
 	}
 }
 
-// The walk now records every node it passes through, so Phase 3b can merge shared content from
-// intermediate selector nodes instead of forcing each leaf to duplicate the whole skeleton.
+// WalkCategory records every node it passes through, so shared content from intermediate
+// selector nodes can be merged rather than duplicated per leaf.
 func TestWalkCategory_ReturnsWholeChain(t *testing.T) {
 	versionPath := buildFixtureTree(t)
 	templatesPath := filepath.Join(versionPath, "templates")
@@ -1110,8 +1092,8 @@ func TestValidateSegment(t *testing.T) {
 	}
 }
 
-// Section 5.19: DescribeTree hard-failed on any subfolder without a manifest.yaml, so
-// `scaffold list` would break as soon as 3b/3c added shared asset folders.
+// DescribeTree must skip subfolders without a jig.yaml rather than error, so shared asset
+// folders don't break `scaffold list`.
 func TestDescribeTree_SkipsFoldersWithoutAManifest(t *testing.T) {
 	templatesPath := t.TempDir()
 	writeFixtureManifest(t, filepath.Join(templatesPath, "services"), "name: S\nselector: function\n")

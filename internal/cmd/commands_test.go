@@ -10,10 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// The 2026-07-27 design review found that runCreate and runList had no tests at all, while
-// internal/discovery sat at 89% - and the broken axis `path` alias lived precisely in this
-// untested wiring layer, where `list` resolved the alias and `create` did not (section 5.3).
-// These tests drive the commands end to end against a fixture tree.
+// These tests drive the create and list commands end to end against a fixture scaffolding-code tree.
 
 // writeFile writes content at dir/name, creating dir.
 func writeFile(t *testing.T, dir, name, content string) {
@@ -26,19 +23,19 @@ func writeFile(t *testing.T, dir, name, content string) {
 	}
 }
 
-// buildScaffoldingCode creates a scaffolding-code tree that exercises the whole design at once:
-// all three name/path/flag identities (the base axis is named "templates" but lives in tmpl/, the
-// overlay axis lives in patterns/ but is driven by --style), and the inheritance chain, with the
-// shared pom.xml contributed at the framework level and refined further down.
+// buildScaffoldingCode creates a scaffolding-code tree exercising name/path/flag identities that
+// differ (the templates axis lives in tmpl/, the overlay axis lives in patterns/ and is driven by
+// --style) and an inheritance chain, with pom.xml contributed at the framework level and refined
+// further down.
 func buildScaffoldingCode(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 
-	writeFile(t, root, "manifest.yaml", "name: root\nframeworks:\n  - name: fw\n    description: Test framework\n")
+	writeFile(t, root, "jig.yaml", "name: root\nframeworks:\n  - name: fw\n    description: Test framework\n")
 
 	// Framework level: the shared file plus the variables every version inherits.
 	fw := filepath.Join(root, "fw")
-	writeFile(t, fw, "manifest.yaml", `
+	writeFile(t, fw, "jig.yaml", `
 name: fw
 variables:
   - name: ArtifactId
@@ -53,20 +50,25 @@ values:
   - name: "1.0"
     default: true
   - name: "2.0"
+    inherits: "1.0"
 `)
+	// 2.0 inherits 1.0 and overrides nothing but a variable - the shape a real "older/newer line"
+	// takes when only values differ.
+	writeFile(t, filepath.Join(fw, "2.0"), "jig.yaml",
+		"name: v2\nvariables:\n  - name: PackageName\n    default: com.v2\n")
 	writeFile(t, fw, "pom.xml", "<artifactId>{{ .ArtifactId }}</artifactId>\n{{- range .Dependencies }}\n<dep>{{ .artifactId }}</dep>\n{{- end }}\n")
 
 	v := filepath.Join(fw, "1.0")
-	writeFile(t, v, "manifest.yaml",
+	writeFile(t, v, "jig.yaml",
 		"name: v\nvalues:\n  - name: templates\n    path: tmpl\n  - name: patterns\n    flag: style\n")
 
 	tmpl := filepath.Join(v, "tmpl")
-	writeFile(t, tmpl, "manifest.yaml",
+	writeFile(t, tmpl, "jig.yaml",
 		"name: T\nrequired: true\nvalues:\n  - name: services\n    default: true\n  - name: parent\n")
 
 	// Selector node that also contributes content - the inheritance case.
 	svc := filepath.Join(tmpl, "services")
-	writeFile(t, svc, "manifest.yaml", `
+	writeFile(t, svc, "jig.yaml", `
 name: S
 selector: function
 default: web
@@ -75,40 +77,35 @@ values:
 dependencies:
   - groupId: g
     artifactId: base-starter
-merge_yaml:
+merge:
   - app.yml
 `)
 	writeFile(t, svc, "app.yml", "name: {{ .ArtifactId }}\nport: 8080\n")
 
 	web := filepath.Join(tmpl, "services", "web")
-	writeFile(t, web, "manifest.yaml", `
+	writeFile(t, web, "jig.yaml", `
 name: REST leaf
 dependencies:
   - groupId: g
     artifactId: web-starter
-merge_yaml:
+merge:
   - app.yml
 `)
 	writeFile(t, web, "app.yml", "web: true\n")
 	writeFile(t, filepath.Join(web, "src", "{{ .PackagePath }}"), "App.java", "package {{ .PackageName }};\n")
 
-	writeFile(t, filepath.Join(tmpl, "parent"), "manifest.yaml", "name: Parent POM\n")
+	writeFile(t, filepath.Join(tmpl, "parent"), "jig.yaml", "name: Parent POM\n")
 
-	writeFile(t, filepath.Join(v, "patterns"), "manifest.yaml", "name: P\nvalues:\n  - name: microservice\n")
-	writeFile(t, filepath.Join(v, "patterns", "microservice"), "manifest.yaml",
+	writeFile(t, filepath.Join(v, "patterns"), "jig.yaml", "name: P\nvalues:\n  - name: microservice\n")
+	writeFile(t, filepath.Join(v, "patterns", "microservice"), "jig.yaml",
 		"name: MS\ndependencies:\n  - groupId: org.springframework.cloud\n    artifactId: openfeign\n")
 
 	return root
 }
 
-// TestMain moves the whole test binary into a throwaway directory before anything runs.
-//
-// `--output` defaults to ".", and for a Go test "." is the PACKAGE SOURCE DIRECTORY. Early versions
-// of these tests omitted the flag and left whole generated Maven projects sitting in internal/cmd/,
-// committed-adjacent and easy to miss. Guarding inside the helper is not enough: the tests most
-// likely to forget are the ones asserting a failure, where a regression that makes them pass would
-// silently start polluting the repo again. Moving the working directory removes the hazard itself
-// rather than asking every future test author to remember it.
+// TestMain moves the whole test binary into a throwaway directory before anything runs, since
+// `--output` defaults to ".", which for a Go test is the package source directory, and a forgotten
+// flag would otherwise leave generated output committed-adjacent in internal/cmd/.
 func TestMain(m *testing.M) {
 	sandbox, err := os.MkdirTemp("", "scaffold-cmd-tests-*")
 	if err != nil {
@@ -148,9 +145,8 @@ func TestList_Frameworks(t *testing.T) {
 	}
 }
 
-// PRD Section 8 requires `list <framework>` to show versions; it previously showed only axes
-// (design review section 5.20). It must also not present the required base axis as a flag, since
-// that one is selected positionally as <category> (section 5.98).
+// `list <framework>` must show versions, categories, and flag names, and must not present the
+// required base axis as a flag, since that one is selected positionally as <category>.
 func TestList_FrameworkShowsVersionsCategoriesAndFlagNames(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	out, err := run(t, newListCommand, "fw", "--scaffolding-code="+root)
@@ -202,8 +198,7 @@ func readGenerated(t *testing.T, outDir, name, rel string) string {
 	return string(data)
 }
 
-// The regression that motivated this whole file: `create` used to rebuild the base-axis path from
-// its name, so an axis aliased to tmpl/ made create fail while list succeeded.
+// create must resolve the base axis's aliased path rather than rebuilding it from the axis name.
 func TestCreate_ResolvesAxisPathAlias(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	_, outDir, err := createInto(t, root, "fw", "services", "payment", "--function=web")
@@ -267,8 +262,8 @@ func TestCreate_DeepMergesYAMLAcrossLevels(t *testing.T) {
 	}
 }
 
-// --style is the axis's declared flag; it must actually select the overlay rather than be
-// accepted and dropped (design review section 2.3).
+// --style is the axis's declared flag; it must actually select the overlay, not just be accepted
+// and dropped.
 func TestCreate_AxisSelectedByDeclaredFlag(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	_, outDir, err := createInto(t, root, "fw", "services", "payment",
@@ -303,7 +298,7 @@ func TestCreate_RejectsUnregisteredAxisValue(t *testing.T) {
 	}
 }
 
-// Fundamental rule #7: <name> must not be able to escape <output>.
+// <name> must not be able to escape <output>.
 func TestCreate_RejectsTraversingName(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	_, _, err := createInto(t, root, "fw", "services", "../../pwned", "--function=web")
@@ -315,7 +310,7 @@ func TestCreate_RejectsTraversingName(t *testing.T) {
 	}
 }
 
-// Fundamental rule #5: all three positionals are required.
+// All three positionals are required.
 func TestCreate_RequiresThreePositionals(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	for _, args := range [][]string{
@@ -342,7 +337,7 @@ func TestCreate_ZeroSelectorCategoryInheritsEverything(t *testing.T) {
 	}
 }
 
-// NFR #2: an existing target fails by default, and each flag changes that in its own way.
+// An existing target fails by default, and each flag changes that in its own way.
 func TestCreate_IdempotencyPolicies(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	outDir := t.TempDir()
@@ -415,7 +410,7 @@ func TestHelpWorksUnderDisableFlagParsing(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Values files (PRD Section 8.7)
+// Values files
 // ---------------------------------------------------------------------------------------------
 
 func writeValues(t *testing.T, dir, name, content string) string {
@@ -537,8 +532,8 @@ scaffolding-code: `+root+`
 	}
 }
 
-// Omitting a positional entirely still fails - the values file relaxes *where* it is written, not
-// whether it is required (fundamental rule #5).
+// Omitting a positional entirely still fails - the values file relaxes where it is written, not
+// whether it is required.
 func TestCreate_ValuesFileStillRequiresAllThreePositionals(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	vf := writeValues(t, t.TempDir(), "values.yaml", `
@@ -595,18 +590,18 @@ func TestLint_PassesOnAHealthyTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lint on a healthy tree returned error: %v\n%s", err, out)
 	}
-	for _, want := range []string{"fw services", "fw parent", "--style=microservice", "0 failed"} {
+	for _, want := range []string{"fw 1.0 services", "fw 1.0 parent", "--style=microservice", "0 failed"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in the lint report, got:\n%s", want, out)
 		}
 	}
 }
 
-// A registered value with no manifest is the exact failure that made `list` advertise things that
-// did not work. lint has to catch it, and has to keep going so one break does not mask the rest.
+// lint must catch a registered value with no manifest, and keep going so one break does not mask
+// the rest.
 func TestLint_CatchesRegisteredValueWithNoManifest(t *testing.T) {
 	root := buildScaffoldingCode(t)
-	writeFile(t, filepath.Join(root, "fw", "1.0", "patterns"), "manifest.yaml",
+	writeFile(t, filepath.Join(root, "fw", "1.0", "patterns"), "jig.yaml",
 		"name: P\nvalues:\n  - name: microservice\n  - name: not-built-yet\n")
 
 	out, err := run(t, newLintCommand, "--scaffolding-code="+root)
@@ -621,8 +616,7 @@ func TestLint_CatchesRegisteredValueWithNoManifest(t *testing.T) {
 	}
 }
 
-// A placeholder naming a variable nobody declares is the most common template bug, and the one
-// that used to surface only when someone happened to generate that exact combination.
+// lint must catch a placeholder naming a variable nobody declares, the most common template bug.
 func TestLint_CatchesUndeclaredVariableInTemplate(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	writeFile(t, filepath.Join(root, "fw", "1.0", "tmpl", "services", "web"), "broken.txt",

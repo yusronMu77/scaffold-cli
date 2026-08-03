@@ -5,11 +5,13 @@ import (
 	"io"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"scaffold-engine-go/internal/discovery"
-	"scaffold-engine-go/internal/manifest"
+	"scaffold-engine-go/internal/jig"
 	"scaffold-engine-go/internal/render"
 )
 
@@ -17,7 +19,7 @@ import (
 // selector/axis/variable flags that come from manifest content.
 var engineFlags = []string{
 	"fw-version", "output", "scaffolding-code",
-	"force", "skip-existing", "no-hooks", "dry-run", "explain", "values",
+	"force", "skip-existing", "dry-run", "explain", "print", "values",
 }
 
 func newCreateCommand() *cobra.Command {
@@ -40,7 +42,10 @@ func newCreateCommand() *cobra.Command {
 			"registry (e.g. --style), and one flag per variable the resolved templates declare\n" +
 			"(e.g. --package). A selector flag left unset falls back to that level's own\n" +
 			"`default`, if it declares one. Unknown flags are an error, not silently ignored.\n\n" +
-			"Use --dry-run to see what would be generated without writing anything.",
+			"Three ways to look without writing anything:\n" +
+			"    --dry-run   which files would be produced\n" +
+			"    --print     what is actually in them, to stdout\n" +
+			"    --explain   which level contributed each one, and what overrode what",
 		DisableFlagParsing: true,
 		RunE:               runCreate,
 	}
@@ -55,8 +60,8 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 		return cmd.Help()
 	}
 
-	// framework/category/name may come from the command line, from a -f values file, or from a
-	// mix of the two - but all three must be supplied somewhere (PRD Section 8.7).
+	// framework/category/name may come from the command line, from a -f values file, or a mix of
+	// both, but all three must be supplied somewhere.
 	framework, category, name, err := applyValuesFile(args)
 	if err != nil {
 		return err
@@ -69,12 +74,9 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 
 	scaffoldingCodeRoot := resolveScaffoldingCodeRoot(args.value("scaffolding-code"))
 
-	// The inheritance chain runs the full depth of the tree, outermost first:
-	//
-	//   spring-boot/ -> 3.2.x/ -> templates/ -> services/ -> web/ -> rest-http/ -> mvc/
-	//
-	// Every level may contribute files, dependencies and variables; deeper levels win. Resolving
-	// it lives in plan.go because `list` and `lint` must reach exactly the same answer.
+	// The inheritance chain runs the full depth of the tree, outermost first; every level may
+	// contribute files, dependencies and variables, and deeper levels win. Resolving it lives in
+	// plan.go so `list` and `lint` reach exactly the same answer as `create`.
 	p, err := resolvePlan(args, scaffoldingCodeRoot, framework, category, name)
 	if err != nil {
 		return err
@@ -97,6 +99,10 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 	targetDir := filepath.Join(output, name)
 	out := cmd.OutOrStdout()
 
+	if args.value("print") == "true" {
+		printRendered(out, files)
+		return nil
+	}
 	if args.value("explain") == "true" {
 		printExplain(out, files, contributions, p, targetDir)
 		return nil
@@ -127,21 +133,26 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 	return nil
 }
 
-// loadLevel turns one already-resolved level of the tree (framework, version, axis) into a render
-// source, or nil when that level has nothing of its own to contribute. Its manifest is a registry,
-// so the interesting part is whatever files/dependencies/variables sit alongside the registry.
-func loadLevel(dir string) (*render.Source, error) {
-	m, err := manifest.LoadOptional(filepath.Join(dir, "manifest.yaml"))
+// loadLevel turns one already-resolved level of the tree (framework, version, axis, or a node on
+// the category chain) into a render source, or nil when that level has nothing of its own to
+// contribute. root is the scaffolding-code root, used only to build a readable label for
+// `--explain`.
+func loadLevel(root, dir string) (*render.Source, error) {
+	m, err := jig.LoadOptional(filepath.Join(dir, jig.FileName))
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", dir, err)
 	}
 	if m == nil {
 		return nil, nil
 	}
+	label := dir
+	if rel, err := filepath.Rel(root, dir); err == nil {
+		label = filepath.ToSlash(rel)
+	}
 	return &render.Source{
 		Dir:      dir,
 		Manifest: m,
-		Label:    filepath.Base(dir),
+		Label:    label,
 		Priority: m.MergePriority,
 	}, nil
 }
@@ -164,7 +175,7 @@ func resolveOverlays(args *parsedArgs, axes []discovery.Axis, versionPath string
 		if err != nil {
 			return nil, nil, err
 		}
-		m, err := manifest.Load(filepath.Join(dir, "manifest.yaml"))
+		m, err := jig.Load(filepath.Join(dir, jig.FileName))
 		if err != nil {
 			return nil, nil, fmt.Errorf("loading --%s=%s: %w", axis.Flag, value, err)
 		}
@@ -174,6 +185,7 @@ func resolveOverlays(args *parsedArgs, axes []discovery.Axis, versionPath string
 			Manifest: m,
 			Label:    fmt.Sprintf("--%s=%s", axis.Flag, value),
 			Priority: m.MergePriority,
+			Overlay:  true,
 		})
 	}
 
@@ -182,32 +194,27 @@ func resolveOverlays(args *parsedArgs, axes []discovery.Axis, versionPath string
 }
 
 // checkReservedFlagNames rejects a manifest that names a selector, an axis flag or a variable
-// after one of the three positional arguments.
-//
-// Such a name is ambiguous the moment both meanings appear in the same values file: `category:
-// libs` would have to be the positional <category> AND the value of a selector called `category`.
-// On the command line the clash hides, because the positional and the flag are written
-// differently - which makes it exactly the kind of latent trap that only surfaces later, in a
-// different invocation style, with a baffling error. Rejecting it up front is fundamental rule #8.
+// after a key a values file already gives a meaning to (see reservedValueKeys). Such a name would
+// be ambiguous the moment both meanings appeared in the same values file, so it is rejected up
+// front instead of surfacing later as a baffling error.
 func checkReservedFlagNames(walk *discovery.WalkResult, axes []discovery.Axis,
-	manifests []*manifest.Manifest) error {
+	manifests []*jig.Jig) error {
 
-	reserved := map[string]bool{keyFramework: true, keyCategory: true, keyName: true}
 	report := func(kind, flag string) error {
-		return fmt.Errorf("%s is named %q, which is reserved: %q is one of the three positional "+
-			"arguments, so a values file could not tell the two apart. Rename it in the manifest",
-			kind, flag, flag)
+		return fmt.Errorf("%s is named %q, which is reserved: in a values file %q is %s, so the "+
+			"two could not be told apart. Rename it in the manifest",
+			kind, flag, flag, jig.ReservedValueKeys[flag])
 	}
 
 	if walk != nil {
 		for _, step := range walk.Steps {
-			if reserved[step.Flag] {
+			if _, bad := jig.ReservedValueKeys[step.Flag]; bad {
 				return report("a selector", step.Flag)
 			}
 		}
 	}
 	for _, a := range axes {
-		if !a.Required && reserved[a.Flag] {
+		if _, bad := jig.ReservedValueKeys[a.Flag]; bad && !a.Required {
 			return report("an axis flag", a.Flag)
 		}
 	}
@@ -216,7 +223,8 @@ func checkReservedFlagNames(walk *discovery.WalkResult, axes []discovery.Axis,
 			continue
 		}
 		for _, v := range m.Variables {
-			if flag := render.VariableFlagName(v); reserved[flag] {
+			flag := render.VariableFlagName(v)
+			if _, bad := jig.ReservedValueKeys[flag]; bad {
 				return report("a variable flag", flag)
 			}
 		}
@@ -224,12 +232,50 @@ func checkReservedFlagNames(walk *discovery.WalkResult, axes []discovery.Axis,
 	return nil
 }
 
-// checkIncompatibilities enforces `incompatible_with` across what the user actually selected
-// (PRD Section 8.5). Only cross-axis constraints need this: compatibility *between selectors* is
-// already expressed by the folder structure itself, so there is nothing left for a rule to say.
-//
-// Absence of a rule means allowed - fail-open for declarations, fail-closed for typos.
-func checkIncompatibilities(manifests []*manifest.Manifest, selectors, axes map[string]string) error {
+// checkOverlayDefaults rejects an overlay that supplies a `default:` for a variable some other
+// level already declares. Overlays are applied last, so under the single precedence rule an
+// overlay's default would silently beat one declared earlier - but an overlay cannot know a
+// correct default for a variable it does not own. Declaring a brand-new variable with a default is
+// still fine, since that one it does own.
+func checkOverlayDefaults(sources []render.Source) error {
+	owner := map[string]string{}
+	for _, s := range sources {
+		if s.Overlay || s.Manifest == nil {
+			continue
+		}
+		for _, v := range s.Manifest.Variables {
+			if _, seen := owner[v.Name]; !seen {
+				owner[v.Name] = s.Label
+			}
+		}
+	}
+	for _, s := range sources {
+		if !s.Overlay || s.Manifest == nil {
+			continue
+		}
+		for _, v := range s.Manifest.Variables {
+			if v.Default == "" {
+				continue
+			}
+			if declaredBy, clash := owner[v.Name]; clash {
+				return fmt.Errorf("%s declares variable %q with a default, but %s already "+
+					"declares it.\n"+
+					"An overlay does not know which version or category it is applied to, so it "+
+					"cannot know a correct default - and overlays are applied last, so this one "+
+					"would silently win.\n"+
+					"Drop the `default:` here, or move the variable out of the overlay entirely.",
+					s.Label, v.Name, declaredBy)
+			}
+		}
+	}
+	return nil
+}
+
+// checkIncompatibilities enforces `incompatible_with` across what the user actually selected.
+// Only cross-axis constraints need this, since compatibility between selectors is already
+// expressed by the folder structure itself. Absence of a rule means allowed - fail-open for
+// declarations, fail-closed for typos.
+func checkIncompatibilities(manifests []*jig.Jig, selectors, axes map[string]string) error {
 	active := map[string]bool{}
 	for flag, value := range selectors {
 		active[flag+":"+value] = true
@@ -254,7 +300,7 @@ func checkIncompatibilities(manifests []*manifest.Manifest, selectors, axes map[
 // validFlagsFor builds the list shown when an unknown flag is rejected: the engine's own flags,
 // one per optional axis, every selector consumed on the way to the leaf, and every variable the
 // resolved templates declare.
-func validFlagsFor(axes []discovery.Axis, walk *discovery.WalkResult, manifests []*manifest.Manifest) []string {
+func validFlagsFor(axes []discovery.Axis, walk *discovery.WalkResult, manifests []*jig.Jig) []string {
 	valid := append([]string{}, engineFlags...)
 	for _, axis := range axes {
 		if !axis.Required {
@@ -275,6 +321,21 @@ func validFlagsFor(axes []discovery.Axis, walk *discovery.WalkResult, manifests 
 		}
 	}
 	return valid
+}
+
+// printRendered writes every rendered file to stdout instead of to disk, so a template can be
+// edited and re-run without a scratch directory - it answers "what is actually in them", as
+// opposed to `--dry-run` ("which files") and `--explain` ("who contributed them"). The
+// `==> path <==` marker follows tail(1)'s convention so it cannot be mistaken for file content.
+func printRendered(out io.Writer, files []render.File) {
+	for _, f := range files {
+		fmt.Fprintf(out, "==> %s <==\n", f.Path)
+		out.Write(f.Content)
+		if len(f.Content) > 0 && f.Content[len(f.Content)-1] != '\n' {
+			fmt.Fprintln(out)
+		}
+		fmt.Fprintln(out)
+	}
 }
 
 func printSelection(out io.Writer, p *plan) {
@@ -315,17 +376,25 @@ func printPlan(out io.Writer, files []render.File, targetDir string, p *plan) {
 		}
 	}
 
+	// The merged `.Data` object, shown as YAML since it is a document rather than a table.
+	if len(p.Data) > 0 {
+		fmt.Fprintln(out, "\nData (.Data, merged across the chain):")
+		if encoded, err := yaml.Marshal(p.Data); err == nil {
+			for _, line := range strings.Split(strings.TrimRight(string(encoded), "\n"), "\n") {
+				fmt.Fprintf(out, "  %s\n", line)
+			}
+		}
+	}
+
 	fmt.Fprintf(out, "\nWould write %d file(s):\n", len(files))
 	for _, f := range files {
 		fmt.Fprintf(out, "  %s\n", f.Path)
 	}
 }
 
-// printExplain answers "where did this file come from, and what else touched it?".
-//
-// In a seven-level chain the merged result looks the same whether one source produced a file or
-// five fought over it, so without this the only way to find out is to read every manifest in the
-// chain and simulate the merge by hand.
+// printExplain answers "where did this file come from, and what else touched it?" - the merged
+// result looks the same whether one source produced it or five fought over it, so without this the
+// only way to tell is to simulate the merge by hand.
 func printExplain(out io.Writer, files []render.File,
 	contributions map[string][]render.Contribution, p *plan, targetDir string) {
 
@@ -353,8 +422,8 @@ func printExplain(out io.Writer, files []render.File,
 		}
 	}
 
-	// Anything dropped by `exclude:` is absent from files but present in contributions, and that
-	// difference is exactly what someone hunting a missing file needs to see.
+	// Anything dropped by `exclude:` is absent from files but present in contributions - exactly
+	// what someone hunting a missing file needs to see.
 	var dropped []string
 	present := map[string]bool{}
 	for _, f := range files {

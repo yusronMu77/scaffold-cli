@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 )
 
-// ExistingPolicy decides what happens when the target directory already exists (PRD NFR #2).
+// ExistingPolicy decides what happens when the target directory already exists.
 type ExistingPolicy int
 
 const (
@@ -19,15 +19,10 @@ const (
 	SkipExisting
 )
 
-// Write commits the rendered tree to <target>, transactionally (PRD Section 6 step 7).
-//
-// Everything is staged in a sibling temp directory and moved into place only once every file has
-// been written. Without this, a failure partway through leaves a half-written tree that the
-// idempotency check then refuses to overwrite on the next run - trapping the user in a state they
-// have to clean up by hand.
-//
-// The staging directory is a sibling of the target rather than the OS temp dir so the final move
-// stays on one filesystem, where rename is atomic.
+// Write commits the rendered tree to <target> transactionally: everything is staged in a sibling
+// temp directory (so the final move stays on one filesystem, where rename is atomic) and moved
+// into place only once every file has been written, so a failure partway through never leaves a
+// half-written tree on disk.
 func Write(target string, files []File, policy ExistingPolicy) (written []string, err error) {
 	if len(files) == 0 {
 		return nil, fmt.Errorf("nothing to write: the resolved template produced no files")
@@ -75,9 +70,7 @@ func Write(target string, files []File, policy ExistingPolicy) (written []string
 		written = append(written, f.Path)
 	}
 
-	// Commit. A fresh target is a single atomic rename; merging into an existing tree has to be
-	// done file by file, but every file is already fully rendered by this point, so a failure
-	// here can no longer be caused by a bad template.
+	// Commit. A fresh target is a single atomic rename; an existing tree is merged file by file.
 	if !targetExists {
 		if err := os.Rename(staging, target); err != nil {
 			return nil, fmt.Errorf("moving generated project into %s: %w", target, err)

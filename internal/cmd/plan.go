@@ -2,20 +2,18 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 
 	"scaffold-engine-go/internal/discovery"
-	"scaffold-engine-go/internal/manifest"
+	"scaffold-engine-go/internal/jig"
 	"scaffold-engine-go/internal/render"
 )
 
-// plan is everything resolving one invocation produces, before anything is written.
-//
-// It exists because three commands need exactly the same answer and used to be able to disagree:
-// `create` generates from it, `list` reports the variables it would ask for, and `lint` renders it
-// to memory to prove a template works. Each computing its own version of "what would happen" is
-// how a lint that passes and a create that fails end up coexisting.
+// plan is everything resolving one invocation produces, before anything is written. It exists so
+// `create`, `list`, and `lint` all reach exactly the same answer instead of each computing its own
+// version of "what would happen".
 type plan struct {
 	Framework string
 	Category  string
@@ -29,9 +27,11 @@ type plan struct {
 	SelectedAxes map[string]string
 
 	Sources   []render.Source
-	Manifests []*manifest.Manifest
+	Manifests []*jig.Jig
 	Context   render.Context
 	Variables map[string]string
+	// Data is the merged `data:` object templates see as .Data.
+	Data map[string]any
 }
 
 // resolvePlan walks the registries and manifests for one invocation without rendering anything.
@@ -40,13 +40,23 @@ func resolvePlan(args *parsedArgs, root, framework, category, name string) (*pla
 	if err != nil {
 		return nil, err
 	}
-	version, err := discovery.ResolveVersion(frameworkPath, args.value("fw-version"))
+	// A version may inherit another (jig.Entry.Inherits), so what looks like one version is a
+	// chain of directories, base first. Structure is read from the most derived version that
+	// declares it; content is collected from every version in the chain, so a derived version
+	// writes only its differences.
+	versionChain, err := discovery.ResolveVersionChain(frameworkPath, args.value("fw-version"))
 	if err != nil {
 		return nil, fmt.Errorf("resolving version for framework %q: %w", framework, err)
 	}
-	versionPath := filepath.Join(frameworkPath, version)
+	version := versionChain[len(versionChain)-1]
+	versionPaths := make([]string, 0, len(versionChain))
+	for _, v := range versionChain {
+		versionPaths = append(versionPaths, filepath.Join(frameworkPath, v))
+	}
 
-	axes, err := discovery.DiscoverAxes(versionPath)
+	// Structure - which axes exist - is read from the most derived version that declares any. A
+	// version existing only to override files declares none, and inherits the shape from its base.
+	structurePath, axes, err := discoverAxesInChain(versionPaths)
 	if err != nil {
 		return nil, fmt.Errorf("discovering axes for %s %s: %w", framework, version, err)
 	}
@@ -54,13 +64,20 @@ func resolvePlan(args *parsedArgs, root, framework, category, name string) (*pla
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", framework, version, err)
 	}
-	templatesPath := baseAxis.Path(versionPath)
+	templatesPath := baseAxis.Path(structurePath)
+
+	// Below the axis, structure is resolved per node rather than per version: a derived version can
+	// override one leaf without owning any of the directories above it.
+	templatesPaths := make([]string, 0, len(versionPaths))
+	for _, vp := range versionPaths {
+		templatesPaths = append(templatesPaths, baseAxis.Path(vp))
+	}
 
 	categoryDir, err := discovery.ResolveCategoryDir(templatesPath, category)
 	if err != nil {
 		return nil, err
 	}
-	walk, err := discovery.WalkCategory(templatesPath, categoryDir, args.flags)
+	walk, err := discovery.WalkCategoryChain(templatesPaths, categoryDir, args.flags)
 	if err != nil {
 		return nil, err
 	}
@@ -75,8 +92,10 @@ func resolvePlan(args *parsedArgs, root, framework, category, name string) (*pla
 		Axes: axes, Walk: walk,
 		Selectors: map[string]string{},
 	}
-	for _, dir := range []string{frameworkPath, versionPath, templatesPath} {
-		src, err := loadLevel(dir)
+	levels := []string{frameworkPath}
+	levels = append(levels, versionPaths...)
+	for _, dir := range levels {
+		src, err := loadLevel(root, dir)
 		if err != nil {
 			return nil, err
 		}
@@ -84,14 +103,36 @@ func resolvePlan(args *parsedArgs, root, framework, category, name string) (*pla
 			p.Sources = append(p.Sources, *src)
 		}
 	}
-	for _, node := range walk.Chain {
-		p.Sources = append(p.Sources, render.Source{
-			Dir: node.Dir, Manifest: node.Manifest,
-			Label: filepath.Base(node.Dir), Priority: node.Manifest.MergePriority,
-		})
+
+	// The axis level itself, across every version that declares it.
+	for _, tp := range templatesPaths {
+		if _, statErr := os.Stat(filepath.Join(tp, jig.FileName)); statErr != nil {
+			continue
+		}
+		src, err := loadLevel(root, tp)
+		if err != nil {
+			return nil, err
+		}
+		if src != nil {
+			p.Sources = append(p.Sources, *src)
+		}
 	}
 
-	overlays, selectedAxes, err := resolveOverlays(args, axes, versionPath)
+	// Then every node the walk visited, base version first, so a derived version's copy overrides
+	// the inherited one and a version that lacks the node contributes nothing.
+	for _, node := range walk.Chain {
+		for _, dir := range node.Dirs {
+			src, err := loadLevel(root, dir)
+			if err != nil {
+				return nil, err
+			}
+			if src != nil {
+				p.Sources = append(p.Sources, *src)
+			}
+		}
+	}
+
+	overlays, selectedAxes, err := resolveOverlays(args, axes, structurePath)
 	if err != nil {
 		return nil, err
 	}
@@ -105,10 +146,17 @@ func resolvePlan(args *parsedArgs, root, framework, category, name string) (*pla
 		p.Selectors[step.Flag] = step.Value
 	}
 
+	if err := checkOverlayDefaults(p.Sources); err != nil {
+		return nil, err
+	}
+
+	// Manifest defaults are templates, so resolution needs the engine's own facts up front.
+	base := render.EngineFacts(name, framework, version, category, p.Selectors, selectedAxes)
 	p.Variables, err = render.ResolveVariables(p.Manifests, render.VariableSource{
 		Flags:        args.flags,
 		Positional:   name,
 		MarkConsumed: func(f string) { args.markConsumed(f) },
+		Base:         base,
 	})
 	if err != nil {
 		return nil, err
@@ -119,6 +167,16 @@ func resolvePlan(args *parsedArgs, root, framework, category, name string) (*pla
 	if err := render.ApplyComputed(p.Context, p.Manifests); err != nil {
 		return nil, err
 	}
+
+	// Data comes after computed variables so a snippet may reference one, and before dependencies
+	// so a coordinate may read a version out of it. It cannot reference itself: strings in `data:`
+	// are rendered against the variable context, not against the object they belong to.
+	p.Data, err = render.MergeData(p.Manifests, args.data, p.Context)
+	if err != nil {
+		return nil, err
+	}
+	p.Context["Data"] = p.Data
+
 	deps, err := render.MergeDependencies(p.Manifests, p.Context)
 	if err != nil {
 		return nil, err
@@ -134,6 +192,39 @@ func resolvePlan(args *parsedArgs, root, framework, category, name string) (*pla
 	return p, nil
 }
 
+// discoverAxesInChain finds the axis structure, searching the version chain from most derived to
+// base and returning the first version that declares a usable one. A version that exists only to
+// override a handful of files declares no axes, so falling back to its base is what makes
+// `inherits:` mean what it says.
+func discoverAxesInChain(versionPaths []string) (string, []discovery.Axis, error) {
+	var lastErr error
+	for i := len(versionPaths) - 1; i >= 0; i-- {
+		vp := versionPaths[i]
+		axes, err := discovery.DiscoverAxes(vp)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		base, err := discovery.RequiredAxis(axes)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		// The axis folder existing is not enough - it must declare itself via a manifest, or a
+		// version that merely has the directory on the way to an overridden file would be mistaken
+		// for one that defines the structure.
+		if _, statErr := os.Stat(filepath.Join(base.Path(vp), jig.FileName)); statErr != nil {
+			lastErr = fmt.Errorf("axis %q under %s has no %s", base.Name, vp, jig.FileName)
+			continue
+		}
+		return vp, axes, nil
+	}
+	if lastErr != nil {
+		return "", nil, lastErr
+	}
+	return "", nil, fmt.Errorf("no version in the chain declares any axis")
+}
+
 // renderPlan turns a resolved plan into the final file tree, plus a per-path record of who
 // contributed what (used by --explain).
 func renderPlan(p *plan) ([]render.File, map[string][]render.Contribution, error) {
@@ -142,9 +233,18 @@ func renderPlan(p *plan) ([]render.File, map[string][]render.Contribution, error
 		return nil, nil, err
 	}
 
+	// Partials are collected across every source before anything renders, so a fragment declared
+	// at the framework level is available to a leaf template seven levels down without being
+	// mentioned again. Deeper definitions of the same name win, like everything else.
+	partials, err := render.CollectPartials(p.Sources)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	trees := make([][]render.File, 0, len(p.Sources))
 	for _, s := range p.Sources {
 		s.Layout = layout
+		s.Partials = partials
 		tree, err := render.RenderSource(s, p.Context)
 		if err != nil {
 			return nil, nil, err

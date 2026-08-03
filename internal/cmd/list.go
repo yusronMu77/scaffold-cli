@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"scaffold-engine-go/internal/discovery"
-	"scaffold-engine-go/internal/manifest"
+	"scaffold-engine-go/internal/jig"
 )
 
 func newListCommand() *cobra.Command {
@@ -32,19 +32,15 @@ func runList(cmd *cobra.Command, rawArgs []string) error {
 	if args.help {
 		return cmd.Help()
 	}
-	// A values file is honoured here too, so the same file that drives `create` can be used to
-	// browse what it would select without repeating the framework name.
-	//
-	// Keys from the file are marked consumed up front, unlike in `create`. A file written for
-	// `create` legitimately carries keys `list` has no use for (--package, --entity, ...), and
-	// rejecting them would defeat the point of sharing one file. Nothing is lost: the unknown-key
-	// check exists to catch a name the user just mistyped, and a typo in the file is still caught
-	// by `create`, where it would actually change the output.
+	// A values file works here too, so the same file that drives `create` can browse what it
+	// would select. Keys the file carries that `list` has no use for are marked consumed rather
+	// than rejected, since a typo in the file is still caught later by `create`.
 	if len(args.valuesFiles) > 0 {
-		values, err := loadValuesFiles(args.valuesFiles)
+		values, data, err := loadValuesFiles(args.valuesFiles)
 		if err != nil {
 			return err
 		}
+		args.data = data
 		for k, v := range values {
 			if _, fromCLI := args.flags[k]; !fromCLI {
 				args.flags[k] = v
@@ -92,9 +88,8 @@ func runList(cmd *cobra.Command, rawArgs []string) error {
 		return listFrameworkDetail(out, framework, frameworkPath, version, versionPath)
 	}
 
-	// With a category given, selector flags are legitimate: they narrow which leaf's variables to
-	// show. Which ones are valid is only knowable after resolving the chain, so the unknown-flag
-	// check happens further down, once the plan has told us.
+	// With a category given, selector flags narrow which leaf's variables to show; which ones are
+	// valid is only known after resolving the chain, so the unknown-flag check happens further down.
 
 	axes, err := discovery.DiscoverAxes(versionPath)
 	if err != nil {
@@ -118,25 +113,20 @@ func runList(cmd *cobra.Command, rawArgs []string) error {
 	fmt.Fprintf(out, "%s %s %s/%s:\n", framework, version, baseAxis.Name, category)
 	printTree(out, tree, "  ")
 
-	// Then the part that was missing entirely: what you can actually set.
-	//
-	// The selector tree alone tells you nothing about --package or --entity, so the only way to
-	// discover them was to open the manifests one by one. Resolving the same plan `create` would
-	// build means the answer here can never drift from what `create` accepts.
+	// Resolve the same plan `create` would build, so the variable list here can never drift from
+	// what `create` actually accepts.
 	return printVariables(out, args, scaffoldingCodeRoot, framework, category)
 }
 
 // printVariables resolves the chain the way `create` would and lists the variables it declares.
-// Failure is silent on purpose: `list` is a browsing command, and a chain that cannot resolve yet
-// (an unbuilt branch, a selector left unset) should still show the tree above rather than replace
-// it with an error. `create` and `lint` are where an unresolvable chain must be loud.
+// Failure is silent on purpose - `list` is a browsing command, so an unresolved chain still shows
+// the tree above instead of an error.
 func printVariables(out io.Writer, args *parsedArgs, root, framework, category string) error {
 	probe := &parsedArgs{flags: args.flags, consumed: map[string]bool{}}
 	p, err := resolvePlan(probe, root, framework, category, "<name>")
 	if err != nil {
-		// Most often this just means a selector with no default is unset, so the chain has not
-		// reached a leaf yet. Say which flag would get there rather than printing nothing - the
-		// tree above already showed the choices, and this connects the two.
+		// Usually just means a selector with no default is unset; say which flag would resolve
+		// it rather than printing nothing.
 		fmt.Fprintf(out, "\nPick a leaf to see the variables it declares:\n  %s\n", err)
 		return nil
 	}
@@ -182,7 +172,7 @@ func printVariables(out io.Writer, args *parsedArgs, root, framework, category s
 }
 
 func listFrameworks(out io.Writer, root string) error {
-	rootManifest, err := manifest.LoadRoot(filepath.Join(root, "manifest.yaml"))
+	rootManifest, err := jig.LoadRoot(filepath.Join(root, jig.FileName))
 	if err != nil {
 		return fmt.Errorf("loading framework registry: %w", err)
 	}
@@ -199,17 +189,11 @@ func listFrameworks(out io.Writer, root string) error {
 
 // listFrameworkDetail prints versions, then the categories of the required base axis, then the
 // optional axes.
-//
-// Two corrections from the design review: the version list was missing entirely even though PRD
-// Section 8 requires it (section 5.20), and the required base axis was printed as "--templates"
-// as though it were a flag, when it is actually selected positionally as <category> (section
-// 5.98). Optional axes are printed under the flag name that really works, which after the `flag`
-// field exists is --style rather than --patterns.
 func listFrameworkDetail(out io.Writer, framework, frameworkPath, version, versionPath string) error {
 	fmt.Fprintf(out, "%s:\n", framework)
 
 	fmt.Fprintln(out, "  versions:")
-	if m, err := manifest.LoadOptional(filepath.Join(frameworkPath, "manifest.yaml")); err != nil {
+	if m, err := jig.LoadOptional(filepath.Join(frameworkPath, jig.FileName)); err != nil {
 		return fmt.Errorf("reading version registry: %w", err)
 	} else if m != nil && len(m.Values) > 0 {
 		for _, v := range m.Values {

@@ -1,9 +1,6 @@
-// Package render turns a resolved template chain into a rendered file tree.
-//
-// It implements PRD Sections 6 (steps 5-7), 7.3 (rendering contract), 7.4 (variable resolution)
-// and 7.5 (render context). The order there is load-bearing: every source is rendered first and
-// merged afterwards, because a templated application.yml is not valid YAML and file collisions
-// can only be keyed on post-substitution paths.
+// Package render turns a resolved template chain into a rendered file tree. Every source is
+// rendered first and merged afterward, since a templated application.yml isn't valid YAML and
+// file collisions can only be keyed on post-substitution paths.
 package render
 
 import (
@@ -12,35 +9,44 @@ import (
 	"strings"
 	"unicode"
 
-	"scaffold-engine-go/internal/manifest"
+	"scaffold-engine-go/internal/jig"
 )
 
-// Dependency is one entry of .Dependencies as a template sees it: a plain map, whose keys are
-// whatever the manifest wrote. `{{ .groupId }}` for Maven, `{{ .name }}` for npm - the engine has
-// no opinion (fundamental rule #1).
+// Dependency is one entry of .Dependencies as a template sees it: a plain map whose keys are
+// whatever the jig wrote. The engine has no opinion about what those keys are.
 type Dependency map[string]string
 
-// Context is the data every template is executed against (PRD Section 7.5).
-//
-// Resolved variables are promoted to top-level keys so a template writes `{{ .ProjectName }}`
-// rather than `{{ .Vars.ProjectName }}`. The engine's own keys are seeded first and then
-// overwritten by variables, so a manifest can shadow them deliberately - but it can never
-// collide by accident with an internal field, because Context is a plain map.
+// Context is the data every template is executed against. Resolved variables are promoted to
+// top-level keys, so a template writes `{{ .ProjectName }}` rather than `{{ .Vars.ProjectName }}`.
+// The engine's own keys are seeded first, then overwritten by variables so a jig can shadow them
+// deliberately.
 type Context map[string]any
+
+// EngineFacts is the part of the context the engine knows before any variable is resolved: what
+// was selected, and what it's called. Split out from BuildContext because a variable's default is
+// itself a template that needs a context to render against before resolution happens.
+func EngineFacts(name, framework, version, category string,
+	selectors map[string]string, axes map[string]string) Context {
+
+	return Context{
+		"Name":         name,
+		"Framework":    framework,
+		"Version":      version,
+		"Category":     category,
+		"Dependencies": []Dependency(nil),
+		"Selectors":    selectors,
+		"Axes":         axes,
+		// Seeded empty so `.Data` is always a map, even in a chain where nobody declared any.
+		"Data": map[string]any{},
+	}
+}
 
 // BuildContext assembles the render context from resolved variables plus the engine's own facts.
 func BuildContext(vars map[string]string, deps []Dependency, name, framework, version, category string,
 	selectors map[string]string, axes map[string]string) Context {
 
-	ctx := Context{
-		"Name":         name,
-		"Framework":    framework,
-		"Version":      version,
-		"Category":     category,
-		"Dependencies": deps,
-		"Selectors":    selectors,
-		"Axes":         axes,
-	}
+	ctx := EngineFacts(name, framework, version, category, selectors, axes)
+	ctx["Dependencies"] = deps
 	for k, v := range vars {
 		ctx[k] = v
 	}
@@ -54,21 +60,23 @@ type VariableSource struct {
 	// Positional is the <name> argument.
 	Positional string
 	// MarkConsumed is called for each flag actually used to fill a variable, so the caller can
-	// still reject flags nobody claimed (PRD Section 8.6).
+	// still reject flags nobody claimed.
 	MarkConsumed func(flag string)
+	// Base is what the engine already knows - see EngineFacts. Jig DEFAULTS are rendered
+	// against it plus the variables resolved so far.
+	Base Context
 }
 
-// ResolveVariables fills every declared variable following PRD Section 7.4's precedence:
-// explicit CLI flag -> from_positional -> manifest default -> error when required.
-//
-// Variables are collected from the whole source list in order, with later sources winning on a
-// name clash - callers pass them in merge_priority order so the same rule governs variables as
-// governs files and dependencies.
-//
-// `prompt` is never interactive: it is help text. A missing required variable produces an error
-// naming the flag to pass, never a hanging prompt, so the CLI stays safe to call from scripts.
-func ResolveVariables(sources []*manifest.Manifest, src VariableSource) (map[string]string, error) {
-	declared := map[string]manifest.Variable{}
+// ResolveVariables fills every declared variable following precedence: explicit CLI flag, then
+// from_positional, then jig default, then error if required. Variables are collected from the
+// whole source list in order, with later sources winning on a name clash. A jig default is
+// itself a template, evaluated against the engine facts plus variables resolved earlier in
+// declaration order — referencing a variable declared later fails loudly instead of resolving to
+// nothing. A value from a flag or values file is never rendered, since user input is data, not a
+// template. `prompt` is help text only: a missing required variable produces an error naming the
+// flag, never a hanging prompt.
+func ResolveVariables(sources []*jig.Jig, src VariableSource) (map[string]string, error) {
+	declared := map[string]jig.Variable{}
 	var order []string
 	for _, m := range sources {
 		if m == nil {
@@ -85,30 +93,44 @@ func ResolveVariables(sources []*manifest.Manifest, src VariableSource) (map[str
 	resolved := make(map[string]string, len(order))
 	var missing []string
 
+	// Grows as we go, so a default may build on a variable resolved before it.
+	ctx := Context{}
+	for k, v := range src.Base {
+		ctx[k] = v
+	}
+	record := func(name, value string) {
+		resolved[name] = value
+		ctx[name] = value
+	}
+
 	for _, varName := range order {
 		v := declared[varName]
 		flagName := VariableFlagName(v)
 
 		if value, ok := src.Flags[flagName]; ok {
-			resolved[v.Name] = value
+			record(v.Name, value)
 			if src.MarkConsumed != nil {
 				src.MarkConsumed(flagName)
 			}
 			continue
 		}
 		if v.FromPositional == "name" {
-			resolved[v.Name] = src.Positional
+			record(v.Name, src.Positional)
 			continue
 		}
 		if v.Default != "" {
-			resolved[v.Name] = v.Default
+			value, err := renderString("default for variable "+v.Name, v.Default, ctx)
+			if err != nil {
+				return nil, err
+			}
+			record(v.Name, value)
 			continue
 		}
 		if v.Required {
 			missing = append(missing, fmt.Sprintf("--%s (%s)", flagName, describeVariable(v)))
 			continue
 		}
-		resolved[v.Name] = ""
+		record(v.Name, "")
 	}
 
 	if len(missing) > 0 {
@@ -118,7 +140,7 @@ func ResolveVariables(sources []*manifest.Manifest, src VariableSource) (map[str
 	return resolved, nil
 }
 
-func describeVariable(v manifest.Variable) string {
+func describeVariable(v jig.Variable) string {
 	if v.Prompt != "" {
 		return v.Prompt
 	}
@@ -126,9 +148,9 @@ func describeVariable(v manifest.Variable) string {
 }
 
 // VariableFlagName returns the CLI flag that fills a variable: its `flag` field when declared,
-// otherwise the kebab-case form of its name (PRD Section 7.4). Same principle as axes and
-// selectors - the manifest names the flag, the engine never invents it from something else.
-func VariableFlagName(v manifest.Variable) string {
+// otherwise the kebab-case form of its name. Same principle as axes and selectors — the jig names
+// the flag, the engine never invents one.
+func VariableFlagName(v jig.Variable) string {
 	if v.Flag != "" {
 		return v.Flag
 	}
@@ -155,10 +177,10 @@ func kebab(s string) string {
 	return b.String()
 }
 
-// ApplyComputed evaluates each `computed:` entry against the context and adds the result to it
-// (PRD Section 7.4). Entries are processed in chain order, so a deeper level may build on a value
-// computed higher up, and a later entry may reference an earlier one.
-func ApplyComputed(ctx Context, sources []*manifest.Manifest) error {
+// ApplyComputed evaluates each `computed:` entry against the context and adds the result to it.
+// Entries are processed in chain order, so a deeper level may build on a value computed higher
+// up, and a later entry may reference an earlier one.
+func ApplyComputed(ctx Context, sources []*jig.Jig) error {
 	for _, m := range sources {
 		if m == nil {
 			continue
@@ -175,20 +197,13 @@ func ApplyComputed(ctx Context, sources []*manifest.Manifest) error {
 }
 
 // MergeDependencies unions the `dependencies:` declared across the chain, deduplicates them, and
-// hands the result to templates as .Dependencies (PRD Section 6 step 7). First-seen order is
-// preserved so generated build files are stable between runs.
-//
-// Three things happen to each entry, none of which assume anything about its field names:
-//
-//   - every value is rendered against ctx, so `groupId: "{{ .GroupId }}"` means what it looks
-//     like. Without this a placeholder survived verbatim into the build file and failed much
-//     later, in the build tool, naming neither the manifest nor the variable;
-//   - identity for deduplication comes from `dependency_key` in the manifests (deepest wins), so
-//     what counts as "the same dependency" is the build tool's rule, declared in data;
-//   - every entry ends up with the SAME key set, missing ones filled with "". Templates run with
-//     missingkey=error, so without this `{{ .scope }}` would be a hard error on the entries that
-//     happen not to set it - forcing a guard around every optional field.
-func MergeDependencies(sources []*manifest.Manifest, ctx Context) ([]Dependency, error) {
+// hands the result to templates as .Dependencies. Order comes from where a coordinate is first
+// seen, so generated build files stay stable between runs; values come from the last declaration,
+// field by field, so a leaf can override a field without restating the rest. Each entry is
+// rendered against ctx, and identity for deduplication comes from `dependency_key` in the jigs
+// (deepest wins). Every entry ends up with the same key set, missing fields filled with "", since
+// templates run with missingkey=error.
+func MergeDependencies(sources []*jig.Jig, ctx Context) ([]Dependency, error) {
 	var key, declaredFields []string
 	for _, m := range sources {
 		if m == nil {
@@ -207,7 +222,7 @@ func MergeDependencies(sources []*manifest.Manifest, ctx Context) ([]Dependency,
 		allowed[f] = true
 	}
 
-	seen := map[string]bool{}
+	position := map[string]int{}
 	observed := map[string]bool{}
 	var out []Dependency
 
@@ -234,14 +249,22 @@ func MergeDependencies(sources []*manifest.Manifest, ctx Context) ([]Dependency,
 			if err != nil {
 				return nil, err
 			}
-			id := manifest.Dependency(rendered).Identity(key)
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
+			id := jig.Dependency(rendered).Identity(key)
 			for k := range rendered {
 				observed[k] = true
 			}
+			if at, seen := position[id]; seen {
+				// Same coordinate, declared again deeper down: keep its place in the list, take
+				// its fields. Only fields this declaration actually sets are applied, so it can't
+				// blank out a field the parent already supplied.
+				for k, v := range rendered {
+					if v != "" {
+						out[at][k] = v
+					}
+				}
+				continue
+			}
+			position[id] = len(out)
 			out = append(out, rendered)
 		}
 	}
@@ -266,7 +289,7 @@ func MergeDependencies(sources []*manifest.Manifest, ctx Context) ([]Dependency,
 	return out, nil
 }
 
-func renderDependency(d manifest.Dependency, ctx Context) (Dependency, error) {
+func renderDependency(d jig.Dependency, ctx Context) (Dependency, error) {
 	out := make(Dependency, len(d))
 	for k, v := range d {
 		if v == "" {
@@ -282,7 +305,7 @@ func renderDependency(d manifest.Dependency, ctx Context) (Dependency, error) {
 	return out, nil
 }
 
-// RenderStrings renders a list of manifest strings (exclude patterns, merge_yaml paths) against
+// RenderStrings renders a list of jig strings (exclude patterns, merge_yaml paths) against
 // the context, so those may contain placeholders like every other path in the system.
 func RenderStrings(what string, in []string, ctx Context) ([]string, error) {
 	if len(in) == 0 {

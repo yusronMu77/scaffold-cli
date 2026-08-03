@@ -13,12 +13,11 @@ import (
 
 	"github.com/Masterminds/sprig/v3"
 
-	"scaffold-engine-go/internal/manifest"
+	"scaffold-engine-go/internal/jig"
 )
 
-// manifestFileName is a reserved name: it is the engine's contract with the template author and
-// must never appear in generated output, at any depth inside a source folder (PRD Section 7.3).
-const manifestFileName = "manifest.yaml"
+// The engine's reserved names all live in one place - see internal/jig/reserved.go, which is
+// the complete list of words the engine owns. Everything else in a template folder is data.
 
 // File is one rendered file waiting to be written. Path is the output-relative path *after*
 // placeholder substitution - which is also the key file collisions are detected on, since two
@@ -33,18 +32,25 @@ type File struct {
 	Merge bool
 }
 
-// Source is one folder contributing files, paired with the manifest that governs it.
+// Source is one folder contributing files, paired with the jig that governs it.
 type Source struct {
 	Dir      string
-	Manifest *manifest.Manifest
+	Manifest *jig.Jig
 	// Label is a human-readable name used in error messages (e.g. `--style=microservice`).
 	Label string
 	// Priority orders overlays; higher applies later and therefore wins. The required base axis
 	// is always ordered first regardless of this value.
 	Priority int
+	// Overlay marks a source that came from an optional axis (`--style=...`) rather than the
+	// inheritance chain. It may override files but may not supply a default for another level's
+	// variable.
+	Overlay bool
 	// Layout is the accumulated, already-rendered set of path-prefix rules in effect for this
 	// source - inherited from every level above it. See CollectLayout.
 	Layout []ResolvedLayout
+	// Partials is the shared set of `{{ define }}` blocks collected from every source, so any
+	// template can `include` a fragment declared anywhere up the chain. See CollectPartials.
+	Partials *template.Template
 }
 
 // ResolvedLayout is a LayoutRule with its `to` already rendered against the context.
@@ -53,12 +59,10 @@ type ResolvedLayout struct {
 	To   string
 }
 
-// CollectLayout gathers layout rules down the inheritance chain and renders each `to`.
-//
-// Later sources override an earlier rule with the same `from`, which is the same
-// deeper-level-wins precedence that governs variables, files and dependencies. Rules are returned
-// longest-prefix-first so the most specific match is applied.
-func CollectLayout(sources []*manifest.Manifest, ctx Context) ([]ResolvedLayout, error) {
+// CollectLayout gathers layout rules down the inheritance chain, rendering each `to` against ctx.
+// Later sources override an earlier rule with the same `from` (the same deeper-wins precedence as
+// everywhere else), and rules are returned longest-prefix-first so the most specific match wins.
+func CollectLayout(sources []*jig.Jig, ctx Context) ([]ResolvedLayout, error) {
 	byFrom := map[string]string{}
 	var order []string
 	for _, m := range sources {
@@ -99,23 +103,16 @@ func applyLayout(rel string, rules []ResolvedLayout) string {
 	return rel
 }
 
-// RenderSource walks one source folder and renders everything in it against ctx.
-//
-// The folder's contents are the source of truth (PRD Section 7.3) - the template author drops
-// files in and they get rendered; `files:` in the manifest is only consulted for per-file
-// overrides. Placeholders are substituted in file *contents* and in *path names*, so a folder
-// literally named `{{ .PackageName | replace "." "/" }}` expands into a package directory tree.
-//
-// A subdirectory that contains its own manifest.yaml is skipped, because that makes it a node in
-// the discovery tree rather than template content. This is what lets any level of the tree carry
-// shared files: spring-boot/ can hold the one pom.xml every version inherits, and its 3.2.x/
-// subfolder is not mistaken for content because 3.2.x/ has a manifest of its own. The rule is
-// structural, in keeping with fundamental rule #3 - no reserved folder name is involved.
+// RenderSource walks one source folder and renders everything in it against ctx. The folder's
+// contents are the source of truth: files are rendered by default, and `files:` in the jig only
+// overrides specific ones. Placeholders are substituted in both file contents and path names. A
+// subdirectory with its own jig.yaml is skipped, since that makes it a discovery node rather than
+// template content.
 func RenderSource(src Source, ctx Context) ([]File, error) {
 	overrides := indexOverrides(src.Manifest)
 	mergePaths := map[string]bool{}
 	if src.Manifest != nil {
-		for _, p := range src.Manifest.MergePaths() {
+		for _, p := range src.Manifest.Merge {
 			mergePaths[path.Clean(slashPath(p))] = true
 		}
 	}
@@ -136,15 +133,18 @@ func RenderSource(src Source, ctx Context) ([]File, error) {
 		relSlash := slashPath(rel)
 
 		if d.IsDir() {
-			// A subfolder with its own manifest.yaml is a discovery node, not content: its files
+			// A subfolder with its own jig.yaml is a discovery node, not content: its files
 			// belong to whichever source resolves to it, not to this one.
-			if _, err := os.Stat(filepath.Join(abs, manifestFileName)); err == nil {
+			if _, err := os.Stat(filepath.Join(abs, jig.FileName)); err == nil {
 				return fs.SkipDir
 			}
 			return nil // otherwise directories are created implicitly from the files inside them
 		}
-		if d.Name() == manifestFileName {
+		if d.Name() == jig.FileName {
 			return nil // reserved: the contract itself is never emitted
+		}
+		if IsPartial(d.Name()) {
+			return nil // `_*.tpl` holds definitions for other templates, not output of its own
 		}
 
 		entry, hasOverride := overrides[relSlash]
@@ -160,13 +160,10 @@ func RenderSource(src Source, ctx Context) ([]File, error) {
 			return fmt.Errorf("reading template file %s: %w", relSlash, err)
 		}
 
-		// Output path, in order of precedence:
-		//   1. an explicit `target` on this file's own entry - the per-file escape hatch;
-		//   2. an inherited layout rule whose `from` prefixes this path - the cheap common case,
-		//      declared once high up so templates below need no entries at all;
-		//   3. mirror the source path.
-		// Placeholders are then substituted across the whole path, so directory names can be
-		// templated, and the output directories are created on demand at write time.
+		// Output path, in order of precedence: an explicit `target` on this file's entry, then an
+		// inherited layout rule whose `from` prefixes this path, then the source path unchanged.
+		// Placeholders are substituted across the whole path, and output directories are created
+		// on demand at write time.
 		outRel := relSlash
 		switch {
 		case hasOverride && entry.Target != "":
@@ -174,7 +171,7 @@ func RenderSource(src Source, ctx Context) ([]File, error) {
 		default:
 			outRel = applyLayout(relSlash, src.Layout)
 		}
-		outRel, err = renderString("path "+relSlash, outRel, ctx)
+		outRel, err = renderWith(src.Partials, "path "+relSlash, outRel, ctx)
 		if err != nil {
 			return err
 		}
@@ -185,7 +182,7 @@ func RenderSource(src Source, ctx Context) ([]File, error) {
 
 		content := raw
 		if !hasOverride || entry.ShouldTemplate() {
-			rendered, err := renderString("file "+relSlash, string(raw), ctx)
+			rendered, err := renderWith(src.Partials, "file "+relSlash, string(raw), ctx)
 			if err != nil {
 				return err
 			}
@@ -211,19 +208,19 @@ func RenderSource(src Source, ctx Context) ([]File, error) {
 		return nil, err
 	}
 
-	// An override pointing at a file that isn't there is a template-authoring bug, and silently
-	// ignoring it would hide a typo in a path (PRD Section 7.3).
+	// An override pointing at a file that isn't there is a template-authoring bug; silently
+	// ignoring it would hide a typo in a path.
 	for p := range overrides {
 		if !used[p] {
-			return nil, fmt.Errorf("%s: manifest `files:` lists %q, but no such file exists in %s",
+			return nil, fmt.Errorf("%s: jig `files:` lists %q, but no such file exists in %s",
 				src.Label, p, src.Dir)
 		}
 	}
 	return out, nil
 }
 
-func indexOverrides(m *manifest.Manifest) map[string]manifest.FileEntry {
-	out := map[string]manifest.FileEntry{}
+func indexOverrides(m *jig.Jig) map[string]jig.FileEntry {
+	out := map[string]jig.FileEntry{}
 	if m == nil {
 		return out
 	}
@@ -233,17 +230,30 @@ func indexOverrides(m *manifest.Manifest) map[string]manifest.FileEntry {
 	return out
 }
 
-// renderString executes one template. Sprig is registered so template authors get `replace`,
-// `title`, `camelcase` and friends - notably `{{ .PackageName | replace "." "/" }}`, which is how
-// a dotted Java package becomes a directory path (PRD Section 6 step 6).
-//
-// `missingkey=error` is deliberate: a typo'd `{{ .PackagName }}` must fail loudly rather than
-// render as "<no value>" and leave a broken file behind (fundamental rule #8).
+// renderString executes one template with no partials available. Used for the short strings that
+// are resolved before the partial set exists - computed variables, layout rules, dependency fields.
 func renderString(what, text string, ctx Context) (string, error) {
-	tmpl, err := template.New(what).
-		Funcs(sprig.TxtFuncMap()).
-		Option("missingkey=error").
-		Parse(text)
+	return renderWith(nil, what, text, ctx)
+}
+
+// renderWith executes one template inside a partial set, so `{{ include "name" . }}` resolves.
+// Sprig is registered either way, giving template authors helpers like `replace`, `title`, and
+// `indent`. `missingkey=error` is deliberate: a typo'd variable must fail loudly rather than
+// silently render as "<no value>" and leave a broken file behind.
+func renderWith(partials *template.Template, what, text string, ctx Context) (string, error) {
+	var tmpl *template.Template
+	if partials != nil {
+		// Clone so one file's parse cannot leak definitions into the next file's set.
+		clone, err := partials.Clone()
+		if err != nil {
+			return "", fmt.Errorf("preparing partials for %s: %w", what, err)
+		}
+		tmpl = withInclude(clone).New(what)
+	} else {
+		tmpl = template.New(what).Funcs(sprig.TxtFuncMap())
+	}
+
+	tmpl, err := tmpl.Option("missingkey=error").Parse(text)
 	if err != nil {
 		return "", fmt.Errorf("parsing %s: %w", what, err)
 	}
@@ -254,9 +264,7 @@ func renderString(what, text string, ctx Context) (string, error) {
 	return buf.String(), nil
 }
 
-// checkContained rejects an output path that would escape the target directory - enforcing the
-// second half of fundamental rule #7, which `<name>` validation alone doesn't cover: a template
-// could just as easily declare `../../evil.txt`.
+// checkContained rejects an output path that would escape the target directory.
 func checkContained(rel string) error {
 	if rel == "" || rel == "." {
 		return fmt.Errorf("renders to an empty output path")
