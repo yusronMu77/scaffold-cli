@@ -1,28 +1,25 @@
-// Package discovery implements the version resolution, top-level axis discovery, and
-// recursive category selector walk described in PRD Section 5/6/7 and crystallized as
-// fundamental rules in Section 13.1: the engine never hardcodes a framework, category, axis,
-// or selector-value name - everything is discovered from what's actually on disk, decided
-// structurally from manifest.yaml content (selector field vs. leaf fields).
+// Package discovery implements version resolution, top-level axis discovery, and the
+// recursive category selector walk. Frameworks, categories, axes, and selector values are
+// never hardcoded - everything is discovered from what's on disk and from jig.yaml content.
 package discovery
 
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
-	"scaffold-engine-go/internal/manifest"
+	"scaffold-engine-go/internal/jig"
 )
 
-// ResolveFrameworkPath looks up name (the CLI-facing identifier, e.g. "spring" or
-// "spring-boot") in the scaffolding-code root registry and returns the actual on-disk
-// directory to use. This is what lets the CLI-facing name differ from the folder name (a
-// framework's optional `path` field in the registry, defaulting to its `name`) - resolution
-// always goes through the registry, never a raw filepath.Join(root, name) assumption.
+// ResolveFrameworkPath looks up name (the CLI-facing identifier) in the scaffolding-code root
+// registry and returns the actual on-disk directory to use, applying a framework's optional
+// `path` alias rather than assuming the folder matches its name.
 func ResolveFrameworkPath(scaffoldingCodeRoot, name string) (string, error) {
-	root, err := manifest.LoadRoot(filepath.Join(scaffoldingCodeRoot, "manifest.yaml"))
+	root, err := jig.LoadRoot(filepath.Join(scaffoldingCodeRoot, jig.FileName))
 	if err != nil {
 		return "", fmt.Errorf("loading framework registry: %w", err)
 	}
@@ -40,12 +37,8 @@ func ResolveFrameworkPath(scaffoldingCodeRoot, name string) (string, error) {
 }
 
 // ValidateSegment rejects a value that would escape the directory it is joined onto. Every value
-// that reaches filepath.Join from CLI input or from a registry `path` must pass through here:
-// PRD Section 8.3 requires <name>, selector values and axis values to be single path
-// segments. Without this check, `create fw services ../../pwned` resolved its write target to
-// ..\..\pwned - straight through fundamental rule #7's "never writes outside <output>/<name>"
-// guarantee (design review 2026-07-27 section 2.4), and a selector value could walk clean out of
-// the base axis into a sibling axis (section 2.5).
+// that reaches filepath.Join from CLI input or a registry `path` must pass through here, so a
+// crafted value like "../../pwned" can't walk the write target outside <output>/<name>.
 func ValidateSegment(what, value string) error {
 	if value == "" {
 		return fmt.Errorf("%s must not be empty", what)
@@ -62,27 +55,19 @@ func ValidateSegment(what, value string) error {
 	return nil
 }
 
-// ResolveVersion picks the version folder to use under scaffolding-code/<framework>/. If
-// explicit is non-empty it's returned as-is (existence is the caller's concern). Otherwise:
-//   - if <framework>/manifest.yaml has a `values:` entry marked `default: true`, that wins
-//     (its DirName(), so a version can be aliased just like frameworks/categories);
-//   - else, among that same registry's entries if present (or all version folders via plain
-//     directory listing if no registry exists at all), the highest version is chosen with a
-//     lenient numeric comparator, since folder names like "3.2.x" aren't strict semver.
-//
-// The framework-level manifest.yaml is optional, same as every other axis-level one - missing
-// it just means falling all the way back to directory listing, exactly like before this
-// registry existed.
+// ResolveVersion picks the version folder to use under scaffolding-code/<framework>/. An
+// explicit value is validated and aliased through the registry; otherwise the registry's
+// `default: true` entry wins, or failing that the highest version folder present, compared
+// with a lenient numeric comparator since folder names like "3.2.x" aren't strict semver. The
+// framework-level jig.yaml is optional - missing it falls back to plain directory listing.
 func ResolveVersion(frameworkPath, explicit string) (string, error) {
-	m, err := manifest.LoadOptional(filepath.Join(frameworkPath, "manifest.yaml"))
+	m, err := jig.LoadOptional(filepath.Join(frameworkPath, jig.FileName))
 	if err != nil {
 		return "", fmt.Errorf("reading version registry under %s: %w", frameworkPath, err)
 	}
 
-	// (a) Explicit value: validated against the registry and translated through its `path` alias,
-	// exactly like every other level. Previously it was returned untouched - neither checked for
-	// existence nor aliased - so a typo surfaced later as a confusing "cannot find the file"
-	// pointing at a path the user never typed (design review 2026-07-27 section 2.12).
+	// (a) Explicit value: validated against the registry and translated through its `path`
+	// alias, same as every other level.
 	if explicit != "" {
 		if m == nil || len(m.Values) == 0 {
 			if err := ValidateSegment("version", explicit); err != nil {
@@ -123,8 +108,8 @@ func ResolveVersion(frameworkPath, explicit string) (string, error) {
 		if c := compareVersions(versions[i], versions[j]); c != 0 {
 			return c > 0
 		}
-		// Break numeric ties deterministically instead of leaving it to directory order:
-		// "3.2.0" and "3.2.x" compare equal under the lenient comparator.
+		// Break ties deterministically: "3.2.0" and "3.2.x" compare equal under the lenient
+		// comparator.
 		return versions[i] > versions[j]
 	})
 	return versions[0], nil
@@ -155,26 +140,74 @@ func compareVersions(a, b string) int {
 	return 0
 }
 
+// ResolveVersionChain resolves a version and every version it inherits from, returning the
+// folder names base-first: ["3.2.x", "2.7.x"] means 2.7.x layers on top of 3.2.x. This lets a
+// derived version declare only its differences instead of copying the whole template tree.
+func ResolveVersionChain(frameworkPath, explicit string) ([]string, error) {
+	leaf, err := ResolveVersion(frameworkPath, explicit)
+	if err != nil {
+		return nil, err
+	}
+	m, err := jig.LoadOptional(filepath.Join(frameworkPath, jig.FileName))
+	if err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return []string{leaf}, nil
+	}
+
+	// Walk up by folder name, guarding against a cycle - a typo in `inherits` would otherwise spin
+	// forever rather than say what is wrong.
+	byDir := map[string]jig.Entry{}
+	for _, e := range m.Values {
+		byDir[e.DirName()] = e
+	}
+
+	chain := []string{leaf}
+	seen := map[string]bool{leaf: true}
+	for current := leaf; ; {
+		entry, ok := byDir[current]
+		if !ok || entry.Inherits == "" {
+			break
+		}
+		parent, ok := m.FindValue(entry.Inherits)
+		if !ok {
+			return nil, fmt.Errorf("version %q inherits %q, which is not a registered version (known: %s)",
+				current, entry.Inherits, strings.Join(m.ValueNames(), ", "))
+		}
+		dir := parent.DirName()
+		if seen[dir] {
+			return nil, fmt.Errorf("version inheritance loops back to %q - check the `inherits` fields", dir)
+		}
+		if err := ValidateSegment("version folder", dir); err != nil {
+			return nil, err
+		}
+		seen[dir] = true
+		chain = append(chain, dir)
+		current = dir
+	}
+
+	// Reverse into base-first order, which is how every other part of the engine applies layers.
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	return chain, nil
+}
+
 // Axis describes one axis registered under <framework>/<version>/. Exactly one axis is the
-// required base axis (PRD Section 5); every other one is an optional overlay axis, whatever it's
-// named.
-//
-// The three identities of PRD Section 4.1 are all carried here, and callers must use the
-// right one. Carrying only Name is what silently broke `path` aliasing end-to-end: DiscoverAxes
-// resolved the alias internally to read the axis's values, then discarded it, and both commands
-// rebuilt the path as filepath.Join(versionPath, Name) - so `list` worked while `create` failed
-// on a path the registry had explicitly aliased away (design review 2026-07-27 section 2.2).
+// required base axis; every other one is an optional overlay axis, whatever it's named. Name,
+// Dir, and Flag are distinct identities and callers must use the right one - building a path
+// from Name instead of Dir silently drops a `path` alias.
 type Axis struct {
 	Name        string // identity: what `scaffold list` shows
 	Dir         string // physical folder name on disk (Path alias applied); use this to build paths
 	Flag        string // CLI flag name that selects this axis; never derived from the folder name
-	Description string // from the axis folder's own manifest.yaml, if present; else empty
+	Description string // from the axis folder's own jig.yaml, if present; else empty
 	Required    bool
 	Values      []string
-	// entries is the axis's own registry, when it has one - used to validate and alias a value
-	// the user selected. Nil means the axis had no registry and Values came from directory
-	// listing.
-	entries []manifest.Entry
+	// entries is the axis's own registry, if any, used to validate and alias a selected value.
+	// Nil means Values came from directory listing.
+	entries []jig.Entry
 }
 
 // Path returns the on-disk directory for this axis under versionPath. Always prefer this over
@@ -184,9 +217,9 @@ func (a Axis) Path(versionPath string) string {
 }
 
 // ResolveValueDir validates a user-selected value for this axis and returns the folder to read.
-// When the axis has a registry, that registry is authoritative: an unregistered folder is not a
-// valid choice, and a registered one may be aliased to a different folder name (fundamental rule
-// #2). Without a registry it falls back to accepting any existing subfolder.
+// When the axis has a registry, that registry is authoritative - an unregistered folder is
+// rejected and a registered one may be aliased to a different folder name. Without a registry
+// it accepts any existing subfolder.
 func (a Axis) ResolveValueDir(versionPath, value string) (string, error) {
 	if err := ValidateSegment(fmt.Sprintf("value for --%s", a.Flag), value); err != nil {
 		return "", err
@@ -207,44 +240,30 @@ func (a Axis) ResolveValueDir(versionPath, value string) (string, error) {
 	return dir, nil
 }
 
-func (a Axis) findEntry(name string) (manifest.Entry, bool) {
+func (a Axis) findEntry(name string) (jig.Entry, bool) {
 	for _, e := range a.entries {
 		if e.Name == name {
 			return e, true
 		}
 	}
-	return manifest.Entry{}, false
+	return jig.Entry{}, false
 }
 
 // DiscoverAxes scans <framework>/<version>/ and returns one Axis per registered axis. Must run
-// before any CLI flags are registered - see feasibility-analysis-engines.md's cobra pre-scan
-// constraint (flags can't be added reliably from inside a cobra Run callback).
+// before any CLI flags are registered, since flags can't be added reliably from inside a cobra
+// Run callback.
 //
-// Which axes exist at all is itself an optional registry, same pattern as every other level
-// (root frameworks:, framework values:, category values:): a manifest.yaml directly under
-// versionPath can list its axes explicitly via `values:` (each entry's Name is the CLI-facing
-// axis name, e.g. "templates"/"patterns"/whatever a template author calls it; an optional
-// `path` aliases it to a differently-named folder, exactly like frameworks/categories/versions).
-// When this registry is present it is authoritative - a stray unregistered folder never shows
-// up as an axis, and axis names/count become entirely data-driven: a template author can add,
-// rename, or drop an axis just by editing this one file, without the engine assuming "templates"
-// and "patterns" are the only two names that will ever exist. When no version-level
-// manifest.yaml exists at all, discovery falls back to plain directory listing, exactly as
-// before this registry existed.
+// Which axes exist is itself an optional registry: a jig.yaml directly under versionPath can
+// list its axes via `values:`, each with an optional `path` alias, making axis names and count
+// entirely data-driven. With no version-level jig.yaml, discovery falls back to plain
+// directory listing.
 //
-// An axis-level manifest.yaml (e.g. templates/manifest.yaml, patterns/manifest.yaml) is
-// separately optional - a missing one is not an error, and Axis.Values then falls back to raw
-// directory listing of that axis's own folder. If present, its `values:` list becomes
-// authoritative for Axis.Values - each entry's CLI-facing Name (not yet resolved to a folder;
-// see ResolveCategoryDir for that) - and its Description/Required fields enrich the axis
-// itself. Same reasoning as every registry in this package (fundamental rule #2, Section 13.1):
-// explicit registration over trusting whatever folders happen to exist.
+// Each axis-level jig.yaml is separately optional; if present its `values:` list becomes
+// authoritative for Axis.Values and its Description/Required fields enrich the axis, otherwise
+// Axis.Values falls back to directory listing of that axis's own folder.
 //
-// Which axis is Required works the same way: preferring the axis's own manifest.yaml
-// `required: true` field over a hardcoded name check. A folder literally named "templates"
-// with no manifest (or one that doesn't set `required`) still falls back to being treated as
-// required, so nothing breaks for a setup that hasn't bothered declaring it explicitly - but
-// nothing in this function assumes the name "templates" is special beyond that fallback.
+// Required is preferred from an axis's own `required: true` field; a folder literally named
+// "templates" with no such declaration still falls back to being treated as required.
 func DiscoverAxes(versionPath string) ([]Axis, error) {
 	entries, err := listAxisEntries(versionPath)
 	if err != nil {
@@ -266,7 +285,7 @@ func DiscoverAxes(versionPath string) ([]Axis, error) {
 			Flag: entry.FlagName(),
 		}
 
-		m, err := manifest.LoadOptional(filepath.Join(axisPath, "manifest.yaml"))
+		m, err := jig.LoadOptional(filepath.Join(axisPath, jig.FileName))
 		if err != nil {
 			return nil, fmt.Errorf("reading axis %q: %w", entry.Name, err)
 		}
@@ -291,11 +310,8 @@ func DiscoverAxes(versionPath string) ([]Axis, error) {
 		axes = append(axes, axis)
 	}
 
-	// The "templates" name fallback applies only when NO axis declared `required: true` anywhere
-	// (PRD Section 4.1 / fundamental rule #4). Evaluating it per-axis, as this used to, produced
-	// two required axes whenever a folder named templates/ coexisted with an axis that declared
-	// the field - and RequiredAxis then silently picked whichever the filesystem listed first
-	// (design review 2026-07-27 section 2.8).
+	// The "templates" name fallback applies only when no axis declared `required: true` anywhere,
+	// to avoid ending up with two required axes.
 	if !anyDeclaredRequired {
 		for i := range axes {
 			if axes[i].Name == "templates" {
@@ -308,12 +324,11 @@ func DiscoverAxes(versionPath string) ([]Axis, error) {
 	return axes, nil
 }
 
-// listAxisEntries returns the registry entries for the axes under versionPath. If
-// versionPath/manifest.yaml declares a non-empty `values:` registry, that list is authoritative
-// (see DiscoverAxes); otherwise it falls back to plain directory listing, synthesising one entry
-// per folder so downstream code has a single shape to work with.
-func listAxisEntries(versionPath string) ([]manifest.Entry, error) {
-	m, err := manifest.LoadOptional(filepath.Join(versionPath, "manifest.yaml"))
+// listAxisEntries returns the registry entries for the axes under versionPath: the registry's
+// `values:` list when non-empty, otherwise one synthesized entry per subfolder so downstream
+// code has a single shape to work with.
+func listAxisEntries(versionPath string) ([]jig.Entry, error) {
+	m, err := jig.LoadOptional(filepath.Join(versionPath, jig.FileName))
 	if err != nil {
 		return nil, err
 	}
@@ -325,19 +340,16 @@ func listAxisEntries(versionPath string) ([]manifest.Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries := make([]manifest.Entry, 0, len(names))
+	entries := make([]jig.Entry, 0, len(names))
 	for _, n := range names {
-		entries = append(entries, manifest.Entry{Name: n})
+		entries = append(entries, jig.Entry{Name: n})
 	}
 	return entries, nil
 }
 
-// RequiredAxis returns the one Axis marked Required from an already-discovered list (see
-// DiscoverAxes) - the base axis whose values are the categories selectable via `scaffold
-// create <framework> <category> <name>`. Callers use axis.Path(versionPath) to build the base
-// path, never filepath.Join(versionPath, axis.Name), so a `path` alias survives.
-//
-// More than one required axis is a configuration error rather than a race won by directory order.
+// RequiredAxis returns the one Axis marked Required from an already-discovered list - the base
+// axis whose values are the categories selectable via `scaffold create <framework> <category>
+// <name>`. More than one required axis is a configuration error.
 func RequiredAxis(axes []Axis) (Axis, error) {
 	var found []Axis
 	for _, a := range axes {
@@ -349,8 +361,8 @@ func RequiredAxis(axes []Axis) (Axis, error) {
 	case 1:
 		return found[0], nil
 	case 0:
-		return Axis{}, fmt.Errorf("no axis marked required (expected exactly one: a folder named " +
-			"\"templates\", or an axis with `required: true` in its manifest.yaml)")
+		return Axis{}, fmt.Errorf("no axis marked required (expected exactly one: a folder named "+
+			"\"templates\", or an axis with `required: true` in its %s)", jig.FileName)
 	default:
 		names := make([]string, 0, len(found))
 		for _, a := range found {
@@ -376,39 +388,160 @@ func FindAxisByFlag(axes []Axis, flag string) (Axis, bool) {
 type SelectorStep struct {
 	Flag      string
 	Value     string
-	Defaulted bool // true if Value came from the manifest's `default` field, not a CLI flag
+	Defaulted bool // true if Value came from the jig's `default` field, not a CLI flag
 }
 
-// ChainNode is one node visited on the way down to the leaf, in root-to-leaf order.
-//
-// PRD Section 7 lets intermediate selector nodes contribute files and dependencies, merged
-// root-to-leaf with deeper nodes winning. Without that, services/web/rest-http/ and
-// services/web/grpc/ each need a full copy of the Spring Boot skeleton - 5-6 duplicates that must
-// then be kept in sync by hand, which is the opposite of this project's purpose (design review
-// 2026-07-27 section 4.6). The walk therefore records the whole chain, not just its last node.
+// WalkCategoryChain is WalkCategory across a version inheritance chain. templatesPaths is
+// base-first: ["…/3.2.x/templates", "…/2.7.x/templates"]. At every node the walk uses the jig
+// from the most derived version that has one, and records every version that has the node so
+// all of them can contribute content - resolved per node rather than per version, since a
+// derived version overriding two leaf files still has the intervening directories on disk but
+// no jigs in them.
+func WalkCategoryChain(templatesPaths []string, category string, selections map[string]string) (*WalkResult, error) {
+	if len(templatesPaths) == 0 {
+		return nil, fmt.Errorf("no template roots to walk")
+	}
+	if err := ValidateSegment("category folder", category); err != nil {
+		return nil, err
+	}
+
+	rel := category
+	var steps []SelectorStep
+	var chain []ChainNode
+
+	for {
+		dirs, m, err := resolveNode(templatesPaths, rel, category)
+		if err != nil {
+			return nil, err
+		}
+		node := ChainNode{Dir: dirs[len(dirs)-1], Dirs: dirs, Manifest: m}
+		chain = append(chain, node)
+
+		if err := m.RequireNavigable(filepath.Join(node.Dir, jig.FileName)); err != nil {
+			return nil, fmt.Errorf("category %q: %w", category, err)
+		}
+		if m.Shape() != jig.ShapeSelector {
+			return &WalkResult{Leaf: m, LeafDir: node.Dir, Steps: steps, Chain: chain}, nil
+		}
+
+		flag := m.Selector
+		value, ok := selections[flag]
+		defaulted := false
+		if !ok {
+			if m.Default == "" {
+				return nil, fmt.Errorf("category %q requires --%s (one of: %s)",
+					category, flag, strings.Join(selectorValues(m, node.Dir), ", "))
+			}
+			value = m.Default
+			defaulted = true
+		}
+
+		child, err := resolveSelectorName(m, node.Dir, flag, value)
+		if err != nil {
+			return nil, fmt.Errorf("category %q: %w", category, err)
+		}
+		steps = append(steps, SelectorStep{Flag: flag, Value: value, Defaulted: defaulted})
+		rel = path.Join(rel, child)
+	}
+}
+
+// resolveNode finds every version that has the node at rel, base-first, and returns a jig
+// describing how to navigate it. Navigational fields are merged per field, deepest declaration
+// winning, rather than taken wholesale from the most derived jig - otherwise a derived version
+// contributing just one file could erase an inherited selector. Content fields are not merged
+// here: each directory is returned separately as its own render source.
+func resolveNode(roots []string, rel, category string) ([]string, *jig.Jig, error) {
+	var dirs []string
+	nav := &jig.Jig{}
+	found := false
+
+	for _, root := range roots {
+		dir := filepath.Join(root, filepath.FromSlash(rel))
+		m, err := jig.LoadOptional(filepath.Join(dir, jig.FileName))
+		if err != nil {
+			return nil, nil, fmt.Errorf("walking category %q: %w", category, err)
+		}
+		if m == nil {
+			continue
+		}
+		dirs = append(dirs, dir)
+		found = true
+
+		if m.Name != "" {
+			nav.Name = m.Name
+		}
+		if m.Selector != "" {
+			nav.Selector = m.Selector
+		}
+		if m.Default != "" {
+			nav.Default = m.Default
+		}
+		if len(m.Values) > 0 {
+			nav.Values = m.Values
+		}
+		// Enough of the content fields to keep Shape() honest: a node that contributes files in any
+		// version is a leaf, not a shapeless jig.
+		nav.Files = append(nav.Files, m.Files...)
+		nav.Dependencies = append(nav.Dependencies, m.Dependencies...)
+		nav.Variables = append(nav.Variables, m.Variables...)
+	}
+
+	if !found {
+		return nil, nil, fmt.Errorf("walking category %q: no %s for %q in any version",
+			category, jig.FileName, rel)
+	}
+	return dirs, nav, nil
+}
+
+// resolveSelectorName validates a selector value and returns the FOLDER name to descend into,
+// leaving the caller to resolve that name against each version in the chain.
+func resolveSelectorName(m *jig.Jig, dir, flag, value string) (string, error) {
+	if err := ValidateSegment(fmt.Sprintf("value for --%s", flag), value); err != nil {
+		return "", err
+	}
+	valid := selectorValues(m, dir)
+	if len(m.Values) > 0 {
+		entry, ok := m.FindValue(value)
+		if !ok {
+			return "", fmt.Errorf("invalid --%s=%q (valid values: %s)", flag, value, strings.Join(valid, ", "))
+		}
+		if err := ValidateSegment(fmt.Sprintf("folder for --%s=%s", flag, value), entry.DirName()); err != nil {
+			return "", err
+		}
+		return entry.DirName(), nil
+	}
+	if info, err := os.Stat(filepath.Join(dir, value)); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("invalid --%s=%q (valid values: %s)", flag, value, strings.Join(valid, ", "))
+	}
+	return value, nil
+}
+
+// ChainNode is one node visited on the way down to the leaf, in root-to-leaf order. Intermediate
+// selector nodes can contribute files and dependencies, merged root-to-leaf with deeper nodes
+// winning, so the walk records the whole chain rather than just its last node.
 type ChainNode struct {
-	Dir      string
-	Manifest *manifest.Manifest
+	// Dir is the most derived version's copy of this node, where the jig was read from.
+	Dir string
+	// Dirs is every version that has this node, base-first; with no version inheritance this is
+	// just [Dir].
+	Dirs     []string
+	Manifest *jig.Jig
 }
 
-// WalkResult is the outcome of walking a category down to its leaf manifest.
+// WalkResult is the outcome of walking a category down to its leaf jig.
 type WalkResult struct {
-	Leaf    *manifest.Manifest
+	Leaf    *jig.Jig
 	LeafDir string
 	Steps   []SelectorStep
-	// Chain is every node from the category root down to and including the leaf. Phase 3b merges
-	// their content in this order.
+	// Chain is every node from the category root down to and including the leaf, in merge order.
 	Chain []ChainNode
 }
 
-// WalkCategory walks templates/<category>/ down to its leaf manifest, following the choices in
-// selections (flag name -> chosen value, e.g. {"function": "web", "protocol": "rest-http"}).
-// At each level it reads manifest.yaml: a selector node recurses into the subfolder named by
-// selections[node.Selector], falling back to that node's own `default` field if the flag
-// wasn't given (recorded as Defaulted on the resulting SelectorStep); a leaf node ends the
-// walk. The same code path handles 0 levels (parent), 1 level (libs), 2 levels (services), or
-// any future depth - no category-specific branching (PRD Section 6/7; fundamental rule #3,
-// Section 13.1).
+// WalkCategory walks templates/<category>/ down to its leaf jig, following the choices in
+// selections (flag name -> chosen value). At each level it reads jig.yaml: a selector node
+// recurses into the subfolder named by selections[node.Selector], falling back to the node's
+// own `default` field if the flag wasn't given (recorded as Defaulted); a leaf node ends the
+// walk. The same code path handles any depth, with no category-specific branching.
 func WalkCategory(templatesPath, category string, selections map[string]string) (*WalkResult, error) {
 	if err := ValidateSegment("category folder", category); err != nil {
 		return nil, err
@@ -418,21 +551,20 @@ func WalkCategory(templatesPath, category string, selections map[string]string) 
 	var chain []ChainNode
 
 	for {
-		m, err := manifest.Load(filepath.Join(currentDir, "manifest.yaml"))
+		m, err := jig.Load(filepath.Join(currentDir, jig.FileName))
 		if err != nil {
 			return nil, fmt.Errorf("walking category %q: %w", category, err)
 		}
 		chain = append(chain, ChainNode{Dir: currentDir, Manifest: m})
 
-		// A registry manifest on a category's chain means the walk has gone somewhere it should
+		// A registry jig on a category's chain means the walk has gone somewhere it should
 		// not be - it neither descends nor renders.
-		if err := m.RequireNavigable(filepath.Join(currentDir, "manifest.yaml")); err != nil {
+		if err := m.RequireNavigable(filepath.Join(currentDir, jig.FileName)); err != nil {
 			return nil, fmt.Errorf("category %q: %w", category, err)
 		}
-		// Anything that isn't a selector ends the walk. That includes a manifest declaring
-		// nothing of its own: under the inheritance model such a leaf is entirely made of what
-		// the levels above it contribute, which is a legitimate and useful shape.
-		if m.Shape() != manifest.ShapeSelector {
+		// Anything that isn't a selector ends the walk, including a jig that declares nothing of
+		// its own - such a leaf is made entirely of what the levels above it contribute.
+		if m.Shape() != jig.ShapeSelector {
 			return &WalkResult{Leaf: m, LeafDir: currentDir, Steps: steps, Chain: chain}, nil
 		}
 
@@ -459,12 +591,10 @@ func WalkCategory(templatesPath, category string, selections map[string]string) 
 }
 
 // resolveSelectorDir turns a selector value into the folder to descend into. When the selector
-// node declares a `values:` registry, that registry is authoritative and may alias a value to a
-// different folder (fundamental rule #2) - previously this level was pure directory listing, so
-// an unregistered stray folder was selectable. The segment check additionally stops a value like
-// "../../patterns/microservice" from walking out of the base axis entirely (design review
-// 2026-07-27 sections 2.5 and 2.6).
-func resolveSelectorDir(m *manifest.Manifest, currentDir, flag, value string) (string, error) {
+// node declares a `values:` registry, that registry is authoritative and may alias a value to
+// a different folder; the segment check additionally stops a value like "../../patterns/x"
+// from walking out of the base axis.
+func resolveSelectorDir(m *jig.Jig, currentDir, flag, value string) (string, error) {
 	if err := ValidateSegment(fmt.Sprintf("value for --%s", flag), value); err != nil {
 		return "", err
 	}
@@ -490,7 +620,7 @@ func resolveSelectorDir(m *manifest.Manifest, currentDir, flag, value string) (s
 
 // selectorValues lists the valid values at a selector node: its `values:` registry when present,
 // otherwise a directory listing.
-func selectorValues(m *manifest.Manifest, dir string) []string {
+func selectorValues(m *jig.Jig, dir string) []string {
 	if len(m.Values) > 0 {
 		return m.ValueNames()
 	}
@@ -498,24 +628,22 @@ func selectorValues(m *manifest.Manifest, dir string) []string {
 	return values
 }
 
-// DescribeCategory reads the manifest at the root of a category without walking further -
-// used by `scaffold list <framework> <category>` to show what selector (if any) comes next,
-// one level at a time, without requiring the caller to already know the full chain.
-func DescribeCategory(templatesPath, category string) (*manifest.Manifest, error) {
-	return manifest.Load(filepath.Join(templatesPath, category, "manifest.yaml"))
+// DescribeCategory reads the jig at the root of a category without walking further, letting
+// `scaffold list <framework> <category>` show what selector (if any) comes next one level at a
+// time.
+func DescribeCategory(templatesPath, category string) (*jig.Jig, error) {
+	return jig.Load(filepath.Join(templatesPath, category, jig.FileName))
 }
 
-// DefaultCategory reads templates/manifest.yaml to find the CLI-facing category name assumed
-// when `scaffold create <framework> <name>` is run with <category> itself omitted - preferring
-// the `values:` registry's entry marked `default: true` (its Name - not yet resolved to a
-// folder; pass the result through ResolveCategoryDir before walking), falling back to a bare
-// top-level `default: "<name>"` string for a category with no explicit values: list. Returns
-// an error if templates/manifest.yaml is missing or neither form of default is set, since
-// that's a required prerequisite for the 2-positional form, not an optional nicety.
+// DefaultCategory reads templates/jig.yaml to find the CLI-facing category name assumed when
+// `scaffold create <framework> <name>` is run with <category> omitted. It prefers the
+// `values:` registry's entry marked `default: true` (pass the result through
+// ResolveCategoryDir before walking), falling back to a bare top-level `default:` string.
+// Returns an error if neither form of default is set.
 func DefaultCategory(templatesPath string) (string, error) {
-	m, err := manifest.Load(filepath.Join(templatesPath, "manifest.yaml"))
+	m, err := jig.Load(filepath.Join(templatesPath, jig.FileName))
 	if err != nil {
-		return "", fmt.Errorf("reading the base axis manifest for a default category failed: %w", err)
+		return "", fmt.Errorf("reading the base axis jig for a default category failed: %w", err)
 	}
 	if entry, ok := m.DefaultValue(); ok {
 		return entry.Name, nil
@@ -523,22 +651,20 @@ func DefaultCategory(templatesPath string) (string, error) {
 	if m.Default != "" {
 		return m.Default, nil
 	}
-	return "", fmt.Errorf("the base axis manifest declares no default category (neither a `values:` entry with `default: true` nor a top-level `default` field)")
+	return "", fmt.Errorf("the base axis jig declares no default category (neither a `values:` entry with `default: true` nor a top-level `default` field)")
 }
 
-// ResolveCategoryDir resolves a CLI-facing category name to its on-disk folder name via the base
-// axis manifest's `values:` registry (same aliasing mechanism as ResolveFrameworkPath).
-//
-// When that registry exists it is authoritative: an unregistered category is rejected rather than
-// passed through to the filesystem (fundamental rule #2). With no registry at all, any existing
-// folder is accepted, as before the mechanism existed.
+// ResolveCategoryDir resolves a CLI-facing category name to its on-disk folder name via the
+// base axis jig's `values:` registry, same aliasing mechanism as ResolveFrameworkPath. When
+// that registry exists it is authoritative and rejects an unregistered category; with no
+// registry, any existing folder is accepted.
 func ResolveCategoryDir(templatesPath, name string) (string, error) {
 	if err := ValidateSegment("category", name); err != nil {
 		return "", err
 	}
-	m, err := manifest.LoadOptional(filepath.Join(templatesPath, "manifest.yaml"))
+	m, err := jig.LoadOptional(filepath.Join(templatesPath, jig.FileName))
 	if err != nil {
-		return "", fmt.Errorf("reading the base axis manifest: %w", err)
+		return "", fmt.Errorf("reading the base axis jig: %w", err)
 	}
 	if m == nil || len(m.Values) == 0 {
 		return name, nil
@@ -551,8 +677,7 @@ func ResolveCategoryDir(templatesPath, name string) (string, error) {
 }
 
 // TreeNode is one node in a category's full selector tree, explored without any user
-// selections (every branch), for `scaffold list <framework> <category>` to display the whole
-// picture at once - e.g. services -> function:{web -> protocol:{rest-http, grpc}, ...}.
+// selections, so `scaffold list <framework> <category>` can display every branch at once.
 type TreeNode struct {
 	Value    string
 	Selector string
@@ -561,36 +686,33 @@ type TreeNode struct {
 }
 
 // DescribeTree recursively explores every branch of a category's selector chain, regardless of
-// depth (0 for parent, 1 for libs, 2 for services, or any future depth) - no category-specific
-// branching, per fundamental rule #3 (Section 13.1).
+// depth, with no category-specific branching.
 func DescribeTree(templatesPath, category string) (*TreeNode, error) {
 	return describeTreeAt(filepath.Join(templatesPath, category), category)
 }
 
 func describeTreeAt(dir, name string) (*TreeNode, error) {
-	m, err := manifest.Load(filepath.Join(dir, "manifest.yaml"))
+	m, err := jig.Load(filepath.Join(dir, jig.FileName))
 	if err != nil {
 		return nil, err
 	}
-	if m.Shape() != manifest.ShapeSelector {
+	if m.Shape() != jig.ShapeSelector {
 		return &TreeNode{Value: name, IsLeaf: true}, nil
 	}
 
 	node := &TreeNode{Value: name, Selector: m.Selector}
 
 	// Respect the node's registry when it has one: the tree shows CLI-facing names, and an
-	// unregistered stray folder must not appear as a selectable value (fundamental rule #2).
-	// Previously this was a raw directory listing at every level.
+	// unregistered stray folder must not appear as a selectable value.
 	if len(m.Values) > 0 {
 		for _, entry := range m.Values {
 			childDir := filepath.Join(dir, entry.DirName())
-			// A registered value whose folder has no manifest is a real data error, but `list` is
-			// a browsing command: killing the whole tree because one branch is unfinished would
-			// hide everything else. Report it in place instead - loud, but not fatal. `create`
-			// still fails hard on the same value, which is where it matters.
-			if _, statErr := os.Stat(filepath.Join(childDir, "manifest.yaml")); statErr != nil {
+			// A registered value with no jig yet is a real error, but `list` is a browsing
+			// command: report it in place rather than killing the whole tree. `create` still
+			// fails hard on it.
+			if _, statErr := os.Stat(filepath.Join(childDir, jig.FileName)); statErr != nil {
 				node.Children = append(node.Children, TreeNode{
-					Value:  entry.Name + "  (registered, but no manifest.yaml yet)",
+					Value:  fmt.Sprintf("%s  (registered, but no %s yet)", entry.Name, jig.FileName),
 					IsLeaf: true,
 				})
 				continue
@@ -609,10 +731,8 @@ func describeTreeAt(dir, name string) (*TreeNode, error) {
 		return nil, err
 	}
 	for _, v := range values {
-		// A subfolder with no manifest.yaml is a supporting asset folder, not a selector value.
-		// Hard-failing on it would break `scaffold list` as soon as 3b/3c adds shared content
-		// (design review 2026-07-27 section 5.19).
-		if _, statErr := os.Stat(filepath.Join(dir, v, "manifest.yaml")); statErr != nil {
+		// A subfolder with no jig.yaml is a supporting asset folder, not a selector value.
+		if _, statErr := os.Stat(filepath.Join(dir, v, jig.FileName)); statErr != nil {
 			continue
 		}
 		child, err := describeTreeAt(filepath.Join(dir, v), v)
@@ -624,9 +744,8 @@ func describeTreeAt(dir, name string) (*TreeNode, error) {
 	return node, nil
 }
 
-// listSubdirs lists immediate subdirectories of path, skipping dotfiles/hidden folders
-// (.git, .vscode, .DS_Store, etc.) - these are never meaningful framework/version/axis/
-// selector values, regardless of which scaffolding-code folder they happen to appear in.
+// listSubdirs lists immediate subdirectories of path, skipping dotfiles and hidden folders
+// (.git, .vscode, etc.), which are never meaningful axis/selector values.
 func listSubdirs(path string) ([]string, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {

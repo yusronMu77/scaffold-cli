@@ -13,20 +13,18 @@ type parsedArgs struct {
 	flags      map[string]string
 	consumed   map[string]bool
 	help       bool
-	// valuesFiles are the -f/--values paths, in the order given. Repeatable, so it cannot live in
-	// the flags map: later files override earlier ones (PRD Section 8.7).
+	// valuesFiles are the -f/--values paths, in the order given. Repeatable, so it can't live in
+	// the flags map; later files override earlier ones.
 	valuesFiles []string
+	// data is the merged `data:` object from those files. It can't live in the flags map either,
+	// since a flag is one scalar and this is a nested document.
+	data map[string]any
 }
 
-// engineValueFlags are the engine's own flags that may take a SPACE-SEPARATED value, mapped from
-// every spelling that selects them.
-//
-// This is the one documented exception to the flag syntax contract (PRD Section 8.2), and it is
-// safe for a specific reason: that contract forbids the two-token form because the set of valid
-// flags is built from manifest content at runtime, so the parser cannot know which of them expect
-// a value. These flags are different - they belong to the engine, the set is closed and known at
-// compile time, so `-f values.yaml` is unambiguous. Manifest-derived flags still require
-// `--key=value`.
+// engineValueFlags are the engine's own flags that may take a space-separated value, mapped from
+// every spelling that selects them. This is the one exception to the --key=value flag syntax; it's
+// safe because these flags belong to the engine and are known at compile time, unlike jig-declared
+// flags whose value-taking status can't be known in advance.
 var engineValueFlags = map[string]string{
 	"-f":       "values",
 	"--values": "values",
@@ -34,22 +32,18 @@ var engineValueFlags = map[string]string{
 
 // parseArgs splits raw args into positional tokens and a --key=value flag map.
 //
-// list/create disable cobra's own flag parsing and use this instead: the valid flag set for
-// "create" varies by category (0/1/2+ selector levels, PRD Section 6/7) and by which axes and
-// variables the chosen manifests declare - none of which is knowable before this exact invocation
-// resolves, while cobra needs the full flag set to exist before it parses anything.
+// list/create disable cobra's own flag parsing and use this instead, since the valid flag set for
+// "create" depends on which jigs are selected and isn't known until this exact invocation
+// resolves.
 //
-// Flag syntax contract (PRD Section 8.1):
-//   - a flag with a value is ALWAYS --key=value;
+// Flag syntax:
+//   - a flag with a value is always --key=value;
 //   - a flag with no "=" is a boolean set to "true";
 //   - any token not starting with "--" is positional, wherever it appears.
 //
-// The two-token "--key value" form is deliberately not supported. Accepting it forced the parser
-// to consume the following token unconditionally, which had no safe behaviour: a boolean flag
-// swallowed the next positional, so `create fw services --dry-run payment-svc` silently generated
-// an artefact named "services", and `--function --protocol rest-http` set function to the literal
-// "--protocol". It also made the --force/--skip-existing pair that NFR #2 calls for impossible to
-// express at all (design review 2026-07-27 section 2.10).
+// The two-token "--key value" form is deliberately unsupported: it would force a boolean flag to
+// swallow the next token unconditionally, with no safe way to tell a flag's value apart from a
+// following positional.
 func parseArgs(args []string) (*parsedArgs, error) {
 	p := &parsedArgs{
 		flags:    map[string]string{},
@@ -141,14 +135,8 @@ func (p *parsedArgs) unusedFlags() []string {
 	return unused
 }
 
-// requireAllFlagsConsumed turns leftover flags into an error listing what would have been valid.
-//
-// PRD Section 8.2 makes this mandatory. Silently ignoring an unrecognised flag is the worst
-// failure mode a generator can have: `--style=microservice` (the form every design document uses)
-// was accepted and dropped, so the service came out with no pattern overlay, exit code 0, no
-// warning. A mistyped `--fucntion=web` behaved the same way, quietly falling back to the default
-// (design review 2026-07-27 section 2.3). It matters more, not less, now that flag names are
-// themselves configurable from the manifests.
+// requireAllFlagsConsumed turns leftover flags into an error listing what would have been valid,
+// so an unrecognised or misspelled flag fails loudly instead of being silently dropped.
 func (p *parsedArgs) requireAllFlagsConsumed(valid []string) error {
 	unused := p.unusedFlags()
 	if len(unused) == 0 {

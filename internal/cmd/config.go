@@ -8,8 +8,7 @@ import (
 )
 
 // configFileName is an optional per-directory config file so users don't have to pass
-// --scaffolding-code on every invocation. Kept intentionally minimal - one field, reusing the
-// yaml.v3 dependency already required for manifests, no new config framework.
+// --scaffolding-code on every invocation.
 const configFileName = ".scaffold.yaml"
 
 // envScaffoldingCode is the environment variable form of --scaffolding-code.
@@ -31,22 +30,16 @@ func loadConfig(path string) (*config, error) {
 	return &cfg, nil
 }
 
-// resolveScaffoldingCodeRoot decides which scaffolding-code path to use, implementing the
-// six-step order in PRD Section 8.4:
+// resolveScaffoldingCodeRoot decides which scaffolding-code path to use, checked in order:
 //
-//	1. --scaffolding-code=<path>
-//	2. $SCAFFOLD_CODE
-//	3. scaffolding_code: in ./.scaffold.yaml
-//	4. scaffolding_code: in $HOME/.scaffold.yaml
-//	5. <directory of the executable>/scaffolding-code
-//	6. ./scaffolding-code
+//  1. --scaffolding-code=<path>
+//  2. $SCAFFOLD_CODE
+//  3. scaffolding_code: in ./.scaffold.yaml
+//  4. scaffolding_code: in $HOME/.scaffold.yaml
+//  5. <directory of the executable>/scaffolding-code
+//  6. ./scaffolding-code
 //
-// Steps 4 and 5 exist because the earlier implementation only ever looked in the process working
-// directory, which left a shipped binary run from anywhere with no working way to find its data -
-// and none of this was written down in any design document (design review 2026-07-27 sections
-// 5.11 and 5.21). Missing config files are skipped; a file that exists but cannot be parsed is
-// deliberately not silently ignored - searchedPaths reports what was tried so the failure is
-// diagnosable.
+// Missing or unset config sources are skipped, falling through to the next step.
 func resolveScaffoldingCodeRoot(flagValue string) string {
 	if flagValue != "" {
 		return flagValue

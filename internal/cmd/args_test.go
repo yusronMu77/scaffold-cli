@@ -25,10 +25,8 @@ func TestParseArgs_EqualsForm(t *testing.T) {
 	}
 }
 
-// PRD Section 8.1: a flag with no "=" is a boolean set to true, and it must NOT swallow the
-// following token. Before this, `--dry-run payment-svc` consumed "payment-svc" as the flag's
-// value, so the artefact silently got named after the category instead (design review section
-// 2.10).
+// Covers that a flag with no "=" is a boolean set to true, and never swallows the following
+// token as its value.
 func TestParseArgs_BareFlagIsBooleanAndDoesNotEatNextToken(t *testing.T) {
 	got := mustParseArgs(t, []string{"fw", "services", "--dry-run", "payment-svc"})
 
@@ -121,8 +119,8 @@ func mustParseArgs(t *testing.T, args []string) *parsedArgs {
 	return got
 }
 
-// -f is the one documented exception to "no two-token flags" (PRD Section 8.2): it belongs to the
-// engine, so the parser knows in advance that it takes a value.
+// Covers the -f/--values spellings, the one flag allowed to take a space-separated value since
+// the engine knows in advance that it expects one.
 func TestParseArgs_ValuesFileSpellings(t *testing.T) {
 	for _, args := range [][]string{
 		{"-f", "values.yaml"},

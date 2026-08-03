@@ -1,4 +1,4 @@
-package manifest
+package jig
 
 import (
 	"os"
@@ -8,18 +8,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func writeManifest(t *testing.T, dir, name, content string) string {
+func writeJig(t *testing.T, dir, name, content string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("writing fixture manifest: %v", err)
+		t.Fatalf("writing fixture jig: %v", err)
 	}
 	return path
 }
 
 func TestLoad_SelectorNode(t *testing.T) {
 	dir := t.TempDir()
-	path := writeManifest(t, dir, "manifest.yaml", `
+	path := writeJig(t, dir, FileName, `
 name: "Services"
 description: "Kategori service - pilih function dulu"
 selector: "function"
@@ -42,10 +42,9 @@ selector: "function"
 
 func TestLoad_LeafNode(t *testing.T) {
 	dir := t.TempDir()
-	path := writeManifest(t, dir, "manifest.yaml", `
+	path := writeJig(t, dir, FileName, `
 name: "REST HTTP Service"
 description: "Spring Boot REST service"
-type: "service"
 variables:
   - name: "ProjectName"
     prompt: "Masukkan nama project"
@@ -97,11 +96,10 @@ func TestLoad_MissingFile(t *testing.T) {
 
 func TestLoad_ParentLeafWithNoSelector(t *testing.T) {
 	dir := t.TempDir()
-	// parent/manifest.yaml is a leaf directly, zero selector levels (PRD Section 6/7).
-	path := writeManifest(t, dir, "manifest.yaml", `
+	// parent/jig.yaml is a leaf directly, with zero selector levels.
+	path := writeJig(t, dir, FileName, `
 name: "Parent POM"
 description: "Static parent pom.xml"
-type: "library"
 variables:
   - name: "ProjectName"
     prompt: "Masukkan nama project"
@@ -119,13 +117,13 @@ files:
 		t.Fatalf("Load returned error: %v", err)
 	}
 	if !m.IsLeaf() {
-		t.Errorf("expected parent manifest to be a leaf with zero selector levels")
+		t.Errorf("expected parent jig to be a leaf with zero selector levels")
 	}
 }
 
 func TestLoadRoot(t *testing.T) {
 	dir := t.TempDir()
-	path := writeManifest(t, dir, "manifest.yaml", `
+	path := writeJig(t, dir, FileName, `
 name: "Scaffolding Code Root"
 description: "Registry of supported technologies"
 frameworks:
@@ -146,15 +144,15 @@ frameworks:
 }
 
 func TestLoadRoot_MissingFile(t *testing.T) {
-	_, err := LoadRoot(filepath.Join(t.TempDir(), "manifest.yaml"))
+	_, err := LoadRoot(filepath.Join(t.TempDir(), FileName))
 	if err == nil {
-		t.Fatal("expected an error for a missing root manifest, got nil")
+		t.Fatal("expected an error for a missing root jig, got nil")
 	}
 }
 
-func TestManifest_Values_And_DefaultValue(t *testing.T) {
+func TestJig_Values_And_DefaultValue(t *testing.T) {
 	dir := t.TempDir()
-	path := writeManifest(t, dir, "manifest.yaml", `
+	path := writeJig(t, dir, FileName, `
 name: "Templates"
 description: "Base axis"
 values:
@@ -189,9 +187,9 @@ values:
 	}
 }
 
-func TestManifest_DefaultValue_NoneMarked(t *testing.T) {
+func TestJig_DefaultValue_NoneMarked(t *testing.T) {
 	dir := t.TempDir()
-	path := writeManifest(t, dir, "manifest.yaml", `
+	path := writeJig(t, dir, FileName, `
 name: "Patterns"
 values:
   - name: "monolith"
@@ -208,8 +206,8 @@ values:
 }
 
 // ---------------------------------------------------------------------------------------------
-// Shape classification (PRD Section 7.1) — added after the 2026-07-27 design review found
-// that IsLeaf() = !IsSelector() misclassified the registry form as a renderable leaf.
+// Shape classification: IsLeaf() = !IsSelector() alone would misclassify the registry form as a
+// renderable leaf, which these tests guard against.
 // ---------------------------------------------------------------------------------------------
 
 func TestShape_Classification(t *testing.T) {
@@ -232,7 +230,7 @@ func TestShape_Classification(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var m Manifest
+			var m Jig
 			if err := yaml.Unmarshal([]byte(tc.yaml), &m); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
@@ -243,23 +241,23 @@ func TestShape_Classification(t *testing.T) {
 	}
 }
 
-// A metadata-only manifest is legitimate at the axis level (name/description/required, values
+// A metadata-only jig is legitimate at the axis level (name/description/required, values
 // from directory listing), so Load must accept it...
-func TestLoad_AcceptsMetadataOnlyAxisManifest(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "manifest.yaml")
+func TestLoad_AcceptsMetadataOnlyAxisJig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
 	if err := os.WriteFile(path, []byte("name: T\nrequired: true\n"), 0o644); err != nil {
 		t.Fatalf("writing fixture: %v", err)
 	}
 	m, err := Load(path)
 	if err != nil {
-		t.Fatalf("expected a metadata-only axis manifest to load, got: %v", err)
+		t.Fatalf("expected a metadata-only axis jig to load, got: %v", err)
 	}
 	if !m.Required {
 		t.Error("expected Required to be parsed")
 	}
 }
 
-// ...but the same manifest is not navigable, so the selector walk rejects it.
+// ...but the same jig is not navigable, so the selector walk rejects it.
 func TestRequireNavigable(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -275,7 +273,7 @@ func TestRequireNavigable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var m Manifest
+			var m Jig
 			if err := yaml.Unmarshal([]byte(tc.yaml), &m); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
@@ -287,12 +285,10 @@ func TestRequireNavigable(t *testing.T) {
 	}
 }
 
-// A selector node carrying content is the normal case under the inheritance model, not an
-// ambiguity: `selector:` makes the node navigable, and its files/dependencies are what it
-// contributes on the way past. This is what lets a shared skeleton live on services/ instead of
-// being copied into every leaf below it (PRD Section 6 step 3).
+// A selector node carrying content is the normal case, not an ambiguity: `selector:` makes the
+// node navigable, and its files/dependencies are what it contributes on the way past.
 func TestLoad_AllowsSelectorNodeWithContent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "manifest.yaml")
+	path := filepath.Join(t.TempDir(), FileName)
 	body := "name: X\nselector: function\ndependencies:\n  - groupId: g\n    artifactId: a\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("writing fixture: %v", err)
@@ -310,7 +306,7 @@ func TestLoad_AllowsSelectorNodeWithContent(t *testing.T) {
 }
 
 func TestValidate_RejectsUnsupportedFromPositional(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "manifest.yaml")
+	path := filepath.Join(t.TempDir(), FileName)
 	body := "name: X\nvariables:\n  - name: V\n    from_positional: category\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("writing fixture: %v", err)
@@ -321,7 +317,7 @@ func TestValidate_RejectsUnsupportedFromPositional(t *testing.T) {
 }
 
 func TestValidate_RejectsIncompleteComputed(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "manifest.yaml")
+	path := filepath.Join(t.TempDir(), FileName)
 	body := "name: X\ncomputed:\n  - name: PackagePath\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("writing fixture: %v", err)
@@ -331,8 +327,37 @@ func TestValidate_RejectsIncompleteComputed(t *testing.T) {
 	}
 }
 
-// LoadOptional distinguishes "absent" (fine) from "present but broken" (fatal). Conflating the
-// two is what let a malformed registry silently fall back to directory listing.
+// A malformed `verify:` must be rejected at load, not discovered by `lint --build` an hour into a
+// CI run. The shape is also the security boundary, so it is worth being strict about.
+func TestValidate_RejectsMalformedVerify(t *testing.T) {
+	for name, body := range map[string]string{
+		"no name":       "name: X\nverify:\n  - command: [mvn, test]\n",
+		"no command":    "name: X\nverify:\n  - name: compiles\n",
+		"empty program": "name: X\nverify:\n  - name: compiles\n    command: [\"\"]\n",
+		"bad timeout":   "name: X\nverify:\n  - name: compiles\n    command: [mvn]\n    timeout: soon\n",
+	} {
+		path := filepath.Join(t.TempDir(), FileName)
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("writing fixture: %v", err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Errorf("%s: expected the jig to be rejected, got nil", name)
+		}
+	}
+}
+
+// A `verify:` block is a contribution, not a shape - the same as layout and computed. A jig
+// carrying one must not be reclassified as a renderable leaf.
+func TestShape_VerifyDoesNotMakeALeaf(t *testing.T) {
+	m := &Jig{Name: "axis", Values: []Entry{{Name: "services"}},
+		Verify: []Verify{{Name: "compiles", Command: []string{"mvn"}}}}
+	if got := m.Shape(); got != ShapeRegistry {
+		t.Errorf("expected the registry shape to be unaffected, got %v", got)
+	}
+}
+
+// LoadOptional distinguishes "absent" (fine) from "present but broken" (fatal), so a malformed
+// registry never silently falls back to directory listing.
 func TestLoadOptional(t *testing.T) {
 	dir := t.TempDir()
 
@@ -341,16 +366,16 @@ func TestLoadOptional(t *testing.T) {
 		t.Errorf("expected (nil, nil) for an absent file, got (%v, %v)", m, err)
 	}
 
-	bad := filepath.Join(dir, "manifest.yaml")
+	bad := filepath.Join(dir, FileName)
 	if err := os.WriteFile(bad, []byte("values: [ broken : yaml"), 0o644); err != nil {
 		t.Fatalf("writing fixture: %v", err)
 	}
 	if _, err := LoadOptional(bad); err == nil {
-		t.Fatal("expected a malformed manifest to be an error, not treated as absent")
+		t.Fatal("expected a malformed jig to be an error, not treated as absent")
 	}
 }
 
-// PRD Section 4.1: name / path / flag are three separate identities.
+// name / path / flag are three separate identities.
 func TestEntry_DirNameAndFlagName(t *testing.T) {
 	plain := Entry{Name: "patterns"}
 	if plain.DirName() != "patterns" || plain.FlagName() != "patterns" {
@@ -367,11 +392,11 @@ func TestEntry_DirNameAndFlagName(t *testing.T) {
 }
 
 func TestLoadRoot_RejectsEmptyRegistry(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "manifest.yaml")
+	path := filepath.Join(t.TempDir(), FileName)
 	if err := os.WriteFile(path, []byte("name: Root\n"), 0o644); err != nil {
 		t.Fatalf("writing fixture: %v", err)
 	}
 	if _, err := LoadRoot(path); err == nil {
-		t.Fatal("expected a root manifest with no frameworks to be rejected (the registry is mandatory)")
+		t.Fatal("expected a root jig with no frameworks to be rejected (the registry is mandatory)")
 	}
 }

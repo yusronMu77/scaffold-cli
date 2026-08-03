@@ -1,7 +1,6 @@
-// Package cmd implements the scaffold CLI's command tree (PRD v2.0): a positional,
-// kubectl-style grammar - `scaffold create <framework> <category> <name> [--flag=value ...]`
-// and `scaffold list [<framework>] [<category>]` - fixed per fundamental rule #5 (Section
-// 13.1), with everything inside the flags fully dynamic and never hardcoded (rule #2).
+// Package cmd implements the scaffold CLI's command tree: a positional, kubectl-style grammar -
+// `scaffold create <framework> <category> <name> [--flag=value ...]` and
+// `scaffold list [<framework>] [<category>]` - with everything inside the flags fully dynamic.
 package cmd
 
 import (
@@ -10,10 +9,8 @@ import (
 
 const defaultScaffoldingCodeRoot = "./scaffolding-code"
 
-// Version is the engine version, reported by `scaffold --version`. It exists so a binary can be
-// matched against the scaffolding-code it reads (implementation-plan Open Question #3), which
-// matters as soon as the two are distributed separately - and they already are, since the engine
-// and the data live in separate repositories.
+// Version is the engine version, reported by `scaffold --version`, so a binary can be matched
+// against the scaffolding-code it reads since the two are distributed separately.
 const Version = "0.2.0-dev"
 
 // Execute builds and runs the cobra command tree.
@@ -24,7 +21,7 @@ func Execute() error {
 		Version: Version,
 		Long: "A universal, dynamically-extensible scaffolding engine. Frameworks, versions, " +
 			"axes, categories, selector values, and even the CLI flag names themselves are all " +
-			"declared by manifests under scaffolding-code/ at runtime - none are hardcoded " +
+			"declared by jigs under scaffolding-code/ at runtime - none are hardcoded " +
 			"(PRD Section 13.1).",
 		SilenceErrors: true, // main() prints the error; without this cobra prints it too
 		SilenceUsage:  true, // a runtime failure is not a usage problem
