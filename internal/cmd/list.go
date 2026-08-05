@@ -14,11 +14,11 @@ import (
 
 func newListCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list [<framework>] [<category>] [--flag=value ...]",
-		Short: "List available frameworks, versions, axes, and categories",
-		Long: "scaffold list                       -> known frameworks\n" +
-			"scaffold list <framework>           -> available versions, categories, and optional axes\n" +
-			"scaffold list <framework> <category> -> full selector tree for that category",
+		Use:   "list [<scaffold>] [<template>] [--flag=value ...]",
+		Short: "List available scaffolds, versions, dimensions, and templates",
+		Long: "scaffold list                     -> known scaffolds\n" +
+			"scaffold list <scaffold>          -> available versions, templates, and optional overlays\n" +
+			"scaffold list <scaffold> <template> -> full selector tree for that template",
 		DisableFlagParsing: true,
 		RunE:               runList,
 	}
@@ -47,14 +47,14 @@ func runList(cmd *cobra.Command, rawArgs []string) error {
 			}
 			args.markConsumed(k)
 		}
-		for _, key := range []string{keyFramework, keyCategory} {
+		for _, key := range []string{keyScaffold, keyTemplate} {
 			if len(args.positional) < 2 && args.flags[key] != "" {
 				args.positional = append(args.positional, args.flags[key])
 			}
 		}
 	}
 	if len(args.positional) > 2 {
-		return fmt.Errorf("usage: scaffold list [<framework>] [<category>]\n"+
+		return fmt.Errorf("usage: scaffold list [<scaffold>] [<template>]\n"+
 			"got %d positional arguments, at most 2 are accepted", len(args.positional))
 	}
 
@@ -66,64 +66,68 @@ func runList(cmd *cobra.Command, rawArgs []string) error {
 		if err := args.requireAllFlagsConsumed([]string{"scaffolding-code"}); err != nil {
 			return err
 		}
-		return listFrameworks(out, scaffoldingCodeRoot)
+		return listScaffolds(out, scaffoldingCodeRoot)
 	}
 
-	framework := args.positional[0]
-	frameworkPath, err := discovery.ResolveFrameworkPath(scaffoldingCodeRoot, framework)
+	scaffold := args.positional[0]
+	scaffoldPath, err := discovery.ResolveScaffoldPath(scaffoldingCodeRoot, scaffold)
 	if err != nil {
 		return err
 	}
-	version, err := discovery.ResolveVersion(frameworkPath, args.value("fw-version"))
+	versionFlag, err := discovery.VersionSelectorFlag(scaffoldPath)
 	if err != nil {
-		return fmt.Errorf("resolving version for framework %q: %w", framework, err)
+		return err
 	}
-	versionPath := filepath.Join(frameworkPath, version)
+	version, err := discovery.ResolveVersion(scaffoldPath, args.value(versionFlag))
+	if err != nil {
+		return fmt.Errorf("resolving version for scaffold %q: %w", scaffold, err)
+	}
+	versionPath := filepath.Join(scaffoldPath, version)
 
 	args.markConsumed(engineFlags...)
 	if len(args.positional) == 1 {
-		if err := args.requireAllFlagsConsumed([]string{"fw-version", "scaffolding-code"}); err != nil {
+		if err := args.requireAllFlagsConsumed([]string{versionFlag, "scaffolding-code"}); err != nil {
 			return err
 		}
-		return listFrameworkDetail(out, framework, frameworkPath, version, versionPath)
+		return listScaffoldDetail(out, scaffold, scaffoldPath, version, versionPath)
 	}
 
-	// With a category given, selector flags narrow which leaf's variables to show; which ones are
+	// With a template given, selector flags narrow which leaf's variables to show; which ones are
 	// valid is only known after resolving the chain, so the unknown-flag check happens further down.
 
-	axes, err := discovery.DiscoverAxes(versionPath)
+	dimensions, err := discovery.DiscoverDimensions(versionPath)
 	if err != nil {
-		return fmt.Errorf("discovering axes for %s %s: %w", framework, version, err)
+		return fmt.Errorf("discovering dimensions for %s %s: %w", scaffold, version, err)
 	}
-	baseAxis, err := discovery.RequiredAxis(axes)
+	baseDimension, err := discovery.RequiredDimension(dimensions)
 	if err != nil {
-		return fmt.Errorf("%s %s: %w", framework, version, err)
+		return fmt.Errorf("%s %s: %w", scaffold, version, err)
 	}
-	templatesPath := baseAxis.Path(versionPath)
+	templatesPath := baseDimension.Path(versionPath)
 
-	category := args.positional[1]
-	categoryDir, err := discovery.ResolveCategoryDir(templatesPath, category)
+	template := args.positional[1]
+	templateDir, err := discovery.ResolveTemplateDir(templatesPath, template)
 	if err != nil {
 		return err
 	}
-	tree, err := discovery.DescribeTree(templatesPath, categoryDir)
+	tree, err := discovery.DescribeTree(templatesPath, templateDir)
 	if err != nil {
-		return fmt.Errorf("describing category %q: %w", category, err)
+		return fmt.Errorf("describing template %q: %w", template, err)
 	}
-	fmt.Fprintf(out, "%s %s %s/%s:\n", framework, version, baseAxis.Name, category)
+	fmt.Fprintf(out, "%s %s %s/%s:\n", scaffold, version, baseDimension.Name, template)
 	printTree(out, tree, "  ")
 
 	// Resolve the same plan `create` would build, so the variable list here can never drift from
 	// what `create` actually accepts.
-	return printVariables(out, args, scaffoldingCodeRoot, framework, category)
+	return printVariables(out, args, scaffoldingCodeRoot, scaffold, template)
 }
 
 // printVariables resolves the chain the way `create` would and lists the variables it declares.
 // Failure is silent on purpose - `list` is a browsing command, so an unresolved chain still shows
 // the tree above instead of an error.
-func printVariables(out io.Writer, args *parsedArgs, root, framework, category string) error {
+func printVariables(out io.Writer, args *parsedArgs, root, scaffold, template string) error {
 	probe := &parsedArgs{flags: args.flags, consumed: map[string]bool{}}
-	p, err := resolvePlan(probe, root, framework, category, "<name>")
+	p, err := resolvePlan(probe, root, scaffold, template, "<name>")
 	if err != nil {
 		// Usually just means a selector with no default is unset; say which flag would resolve
 		// it rather than printing nothing.
@@ -134,7 +138,7 @@ func printVariables(out io.Writer, args *parsedArgs, root, framework, category s
 	// Now that the plan is resolved, the valid flag set is known - so a typo can finally be caught
 	// here too, instead of `list` accepting anything.
 	probe.markConsumed(engineFlags...)
-	if err := probe.requireAllFlagsConsumed(validFlagsFor(p.Axes, p.Walk, p.Manifests)); err != nil {
+	if err := probe.requireAllFlagsConsumed(validFlagsFor(p.Dimensions, p.Walk, p.Manifests)); err != nil {
 		return err
 	}
 
@@ -143,7 +147,7 @@ func printVariables(out io.Writer, args *parsedArgs, root, framework, category s
 		return nil
 	}
 
-	fmt.Fprintf(out, "\nVariables for %s", category)
+	fmt.Fprintf(out, "\nVariables for %s", template)
 	if len(p.Walk.Steps) > 0 {
 		for _, s := range p.Walk.Steps {
 			fmt.Fprintf(out, " --%s=%s", s.Flag, s.Value)
@@ -171,29 +175,29 @@ func printVariables(out io.Writer, args *parsedArgs, root, framework, category s
 	return nil
 }
 
-func listFrameworks(out io.Writer, root string) error {
-	rootManifest, err := jig.LoadRoot(filepath.Join(root, jig.FileName))
+func listScaffolds(out io.Writer, root string) error {
+	rootJig, err := jig.LoadRoot(filepath.Join(root, jig.FileName))
 	if err != nil {
-		return fmt.Errorf("loading framework registry: %w", err)
+		return fmt.Errorf("loading scaffold registry: %w", err)
 	}
-	fmt.Fprintln(out, "Available frameworks:")
-	for _, f := range rootManifest.Frameworks {
-		if f.Description != "" {
-			fmt.Fprintf(out, "  %s - %s\n", f.Name, f.Description)
+	fmt.Fprintln(out, "Available scaffolds:")
+	for _, s := range rootJig.Values {
+		if s.Description != "" {
+			fmt.Fprintf(out, "  %s - %s\n", s.Name, s.Description)
 		} else {
-			fmt.Fprintf(out, "  %s\n", f.Name)
+			fmt.Fprintf(out, "  %s\n", s.Name)
 		}
 	}
 	return nil
 }
 
-// listFrameworkDetail prints versions, then the categories of the required base axis, then the
-// optional axes.
-func listFrameworkDetail(out io.Writer, framework, frameworkPath, version, versionPath string) error {
-	fmt.Fprintf(out, "%s:\n", framework)
+// listScaffoldDetail prints versions, then the templates of the required base dimension, then the
+// optional overlays.
+func listScaffoldDetail(out io.Writer, scaffold, scaffoldPath, version, versionPath string) error {
+	fmt.Fprintf(out, "%s:\n", scaffold)
 
 	fmt.Fprintln(out, "  versions:")
-	if m, err := jig.LoadOptional(filepath.Join(frameworkPath, jig.FileName)); err != nil {
+	if m, err := jig.LoadOptional(filepath.Join(scaffoldPath, jig.FileName)); err != nil {
 		return fmt.Errorf("reading version registry: %w", err)
 	} else if m != nil && len(m.Values) > 0 {
 		for _, v := range m.Values {
@@ -212,30 +216,30 @@ func listFrameworkDetail(out io.Writer, framework, frameworkPath, version, versi
 	}
 	fmt.Fprintf(out, "  resolved version: %s\n", version)
 
-	axes, err := discovery.DiscoverAxes(versionPath)
+	dimensions, err := discovery.DiscoverDimensions(versionPath)
 	if err != nil {
 		return err
 	}
-	baseAxis, err := discovery.RequiredAxis(axes)
+	baseDimension, err := discovery.RequiredDimension(dimensions)
 	if err != nil {
-		return fmt.Errorf("%s %s: %w", framework, version, err)
+		return fmt.Errorf("%s %s: %w", scaffold, version, err)
 	}
 
-	fmt.Fprintf(out, "  categories (positional <category>, from the %q axis): %s\n",
-		baseAxis.Name, strings.Join(baseAxis.Values, ", "))
+	fmt.Fprintf(out, "  templates (positional <template>, from the %q dimension): %s\n",
+		baseDimension.Name, strings.Join(baseDimension.Values, ", "))
 
-	fmt.Fprintln(out, "  optional axes:")
+	fmt.Fprintln(out, "  optional overlays:")
 	any := false
-	for _, a := range axes {
-		if a.Required {
+	for _, d := range dimensions {
+		if d.Required {
 			continue
 		}
 		any = true
 		desc := ""
-		if a.Description != "" {
-			desc = " - " + a.Description
+		if d.Description != "" {
+			desc = " - " + d.Description
 		}
-		fmt.Fprintf(out, "    --%s%s: %s\n", a.Flag, desc, strings.Join(a.Values, ", "))
+		fmt.Fprintf(out, "    --%s%s: %s\n", d.Flag, desc, strings.Join(d.Values, ", "))
 	}
 	if !any {
 		fmt.Fprintln(out, "    (none)")

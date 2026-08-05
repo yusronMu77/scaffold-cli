@@ -25,27 +25,27 @@ type Context map[string]any
 // EngineFacts is the part of the context the engine knows before any variable is resolved: what
 // was selected, and what it's called. Split out from BuildContext because a variable's default is
 // itself a template that needs a context to render against before resolution happens.
-func EngineFacts(name, framework, version, category string,
-	selectors map[string]string, axes map[string]string) Context {
+func EngineFacts(name, scaffold, version, template string,
+	selectors map[string]string, overlays map[string]string) Context {
 
 	return Context{
 		"Name":         name,
-		"Framework":    framework,
+		"Scaffold":     scaffold,
 		"Version":      version,
-		"Category":     category,
+		"Template":     template,
 		"Dependencies": []Dependency(nil),
 		"Selectors":    selectors,
-		"Axes":         axes,
+		"Overlays":     overlays,
 		// Seeded empty so `.Data` is always a map, even in a chain where nobody declared any.
 		"Data": map[string]any{},
 	}
 }
 
 // BuildContext assembles the render context from resolved variables plus the engine's own facts.
-func BuildContext(vars map[string]string, deps []Dependency, name, framework, version, category string,
-	selectors map[string]string, axes map[string]string) Context {
+func BuildContext(vars map[string]string, deps []Dependency, name, scaffold, version, template string,
+	selectors map[string]string, overlays map[string]string) Context {
 
-	ctx := EngineFacts(name, framework, version, category, selectors, axes)
+	ctx := EngineFacts(name, scaffold, version, template, selectors, overlays)
 	ctx["Dependencies"] = deps
 	for k, v := range vars {
 		ctx[k] = v

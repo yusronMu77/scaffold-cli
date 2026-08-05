@@ -16,32 +16,33 @@ import (
 )
 
 // engineFlags are the flags the engine itself owns at every invocation, as opposed to the
-// selector/axis/variable flags that come from manifest content.
+// selector/overlay/variable flags that come from manifest content.
 var engineFlags = []string{
-	"fw-version", "output", "scaffolding-code",
+	"output", "scaffolding-code",
 	"force", "skip-existing", "dry-run", "explain", "print", "values",
 }
 
 func newCreateCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "create <framework> <category> <name> [--flag=value ...]",
-		Short: "Generate a new artefact (service, lib, parent, ...) from scaffolding-code",
-		Long: "scaffold create <framework> <category> <name> [--flag=value ...]\n" +
+		Use:   "create <scaffold> <template> <name> [--flag=value ...]",
+		Short: "Generate a new project (service, lib, parent, ...) from scaffolding-code",
+		Long: "scaffold create <scaffold> <template> <name> [--flag=value ...]\n" +
 			"scaffold create -f values.yaml\n\n" +
 			"All three positional arguments must be supplied - either on the command line or in a\n" +
-			"values file (-f). <framework> and <category> are resolved through the registries under\n" +
-			"scaffolding-code/ and are never hardcoded; <name> is the artefact's identifier and must\n" +
+			"values file (-f). <scaffold> and <template> are resolved through the registries under\n" +
+			"scaffolding-code/ and are never hardcoded; <name> is the project's identifier and must\n" +
 			"be a single path segment.\n\n" +
 			"A values file is the flag namespace without the dashes: --package=x is `package: x`.\n" +
 			"-f may be repeated (later files win), and a flag on the command line beats them all,\n" +
 			"so one shared file plus a one-off override is the normal way to use it:\n" +
 			"    scaffold create -f base.yaml -f prod.yaml --name=payment-canary\n\n" +
 			"Flags use --key=value; a flag with no '=' is a boolean set to true. Which flags are\n" +
-			"valid depends on the category's selector chain (e.g. --function/--protocol for\n" +
-			"'services'), one flag per optional axis named by that axis's `flag` field in the\n" +
-			"registry (e.g. --style), and one flag per variable the resolved templates declare\n" +
-			"(e.g. --package). A selector flag left unset falls back to that level's own\n" +
-			"`default`, if it declares one. Unknown flags are an error, not silently ignored.\n\n" +
+			"valid depends on the template's selector chain (e.g. --function/--protocol for\n" +
+			"'services'), one flag per optional dimension named by that dimension's `flag` field in\n" +
+			"the registry (e.g. --style, --scaffold-version), and one flag per variable the resolved\n" +
+			"templates declare (e.g. --package). A selector flag left unset falls back to that\n" +
+			"level's own `default`, if it declares one. Unknown flags are an error, not silently\n" +
+			"ignored.\n\n" +
 			"Three ways to look without writing anything:\n" +
 			"    --dry-run   which files would be produced\n" +
 			"    --print     what is actually in them, to stdout\n" +
@@ -60,9 +61,9 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 		return cmd.Help()
 	}
 
-	// framework/category/name may come from the command line, from a -f values file, or a mix of
+	// scaffold/template/name may come from the command line, from a -f values file, or a mix of
 	// both, but all three must be supplied somewhere.
-	framework, category, name, err := applyValuesFile(args)
+	scaffold, template, name, err := applyValuesFile(args)
 	if err != nil {
 		return err
 	}
@@ -77,13 +78,13 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 	// The inheritance chain runs the full depth of the tree, outermost first; every level may
 	// contribute files, dependencies and variables, and deeper levels win. Resolving it lives in
 	// plan.go so `list` and `lint` reach exactly the same answer as `create`.
-	p, err := resolvePlan(args, scaffoldingCodeRoot, framework, category, name)
+	p, err := resolvePlan(args, scaffoldingCodeRoot, scaffold, template, name)
 	if err != nil {
 		return err
 	}
 
 	args.markConsumed(engineFlags...)
-	if err := args.requireAllFlagsConsumed(validFlagsFor(p.Axes, p.Walk, p.Manifests)); err != nil {
+	if err := args.requireAllFlagsConsumed(validFlagsFor(p.Dimensions, p.Walk, p.Manifests)); err != nil {
 		return err
 	}
 
@@ -133,8 +134,8 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 	return nil
 }
 
-// loadLevel turns one already-resolved level of the tree (framework, version, axis, or a node on
-// the category chain) into a render source, or nil when that level has nothing of its own to
+// loadLevel turns one already-resolved level of the tree (scaffold, version, dimension, or a node
+// on the template chain) into a render source, or nil when that level has nothing of its own to
 // contribute. root is the scaffolding-code root, used only to build a readable label for
 // `--explain`.
 func loadLevel(root, dir string) (*render.Source, error) {
@@ -157,33 +158,33 @@ func loadLevel(root, dir string) (*render.Source, error) {
 	}, nil
 }
 
-// resolveOverlays validates and loads every optional axis the user selected, returning the render
-// sources sorted by merge_priority plus a flag->value map for the render context.
-func resolveOverlays(args *parsedArgs, axes []discovery.Axis, versionPath string) ([]render.Source, map[string]string, error) {
+// resolveOverlays validates and loads every optional dimension the user selected, returning the
+// render sources sorted by merge_priority plus a flag->value map for the render context.
+func resolveOverlays(args *parsedArgs, dimensions []discovery.Dimension, versionPath string) ([]render.Source, map[string]string, error) {
 	selected := map[string]string{}
 	var sources []render.Source
 
-	for _, axis := range axes {
-		if axis.Required {
-			continue // the base axis is handled by the category walk
+	for _, dim := range dimensions {
+		if dim.Required {
+			continue // the base dimension is handled by the template walk
 		}
-		value, ok := args.get(axis.Flag)
+		value, ok := args.get(dim.Flag)
 		if !ok {
 			continue
 		}
-		dir, err := axis.ResolveValueDir(versionPath, value)
+		dir, err := dim.ResolveValueDir(versionPath, value)
 		if err != nil {
 			return nil, nil, err
 		}
 		m, err := jig.Load(filepath.Join(dir, jig.FileName))
 		if err != nil {
-			return nil, nil, fmt.Errorf("loading --%s=%s: %w", axis.Flag, value, err)
+			return nil, nil, fmt.Errorf("loading --%s=%s: %w", dim.Flag, value, err)
 		}
-		selected[axis.Flag] = value
+		selected[dim.Flag] = value
 		sources = append(sources, render.Source{
 			Dir:      dir,
 			Manifest: m,
-			Label:    fmt.Sprintf("--%s=%s", axis.Flag, value),
+			Label:    fmt.Sprintf("--%s=%s", dim.Flag, value),
 			Priority: m.MergePriority,
 			Overlay:  true,
 		})
@@ -193,11 +194,11 @@ func resolveOverlays(args *parsedArgs, axes []discovery.Axis, versionPath string
 	return sources, selected, nil
 }
 
-// checkReservedFlagNames rejects a manifest that names a selector, an axis flag or a variable
+// checkReservedFlagNames rejects a manifest that names a selector, an overlay flag or a variable
 // after a key a values file already gives a meaning to (see reservedValueKeys). Such a name would
 // be ambiguous the moment both meanings appeared in the same values file, so it is rejected up
 // front instead of surfacing later as a baffling error.
-func checkReservedFlagNames(walk *discovery.WalkResult, axes []discovery.Axis,
+func checkReservedFlagNames(walk *discovery.WalkResult, dimensions []discovery.Dimension,
 	manifests []*jig.Jig) error {
 
 	report := func(kind, flag string) error {
@@ -212,10 +213,17 @@ func checkReservedFlagNames(walk *discovery.WalkResult, axes []discovery.Axis,
 				return report("a selector", step.Flag)
 			}
 		}
+		for _, cp := range walk.Checkpoints {
+			for _, d := range cp.Overlays {
+				if _, bad := jig.ReservedValueKeys[d.Flag]; bad {
+					return report("an overlay flag", d.Flag)
+				}
+			}
+		}
 	}
-	for _, a := range axes {
-		if _, bad := jig.ReservedValueKeys[a.Flag]; bad && !a.Required {
-			return report("an axis flag", a.Flag)
+	for _, d := range dimensions {
+		if _, bad := jig.ReservedValueKeys[d.Flag]; bad && !d.Required {
+			return report("an overlay flag", d.Flag)
 		}
 	}
 	for _, m := range manifests {
@@ -260,7 +268,7 @@ func checkOverlayDefaults(sources []render.Source) error {
 			if declaredBy, clash := owner[v.Name]; clash {
 				return fmt.Errorf("%s declares variable %q with a default, but %s already "+
 					"declares it.\n"+
-					"An overlay does not know which version or category it is applied to, so it "+
+					"An overlay does not know which version or template it is applied to, so it "+
 					"cannot know a correct default - and overlays are applied last, so this one "+
 					"would silently win.\n"+
 					"Drop the `default:` here, or move the variable out of the overlay entirely.",
@@ -272,15 +280,15 @@ func checkOverlayDefaults(sources []render.Source) error {
 }
 
 // checkIncompatibilities enforces `incompatible_with` across what the user actually selected.
-// Only cross-axis constraints need this, since compatibility between selectors is already
+// Only cross-dimension constraints need this, since compatibility between selectors is already
 // expressed by the folder structure itself. Absence of a rule means allowed - fail-open for
 // declarations, fail-closed for typos.
-func checkIncompatibilities(manifests []*jig.Jig, selectors, axes map[string]string) error {
+func checkIncompatibilities(manifests []*jig.Jig, selectors, overlays map[string]string) error {
 	active := map[string]bool{}
 	for flag, value := range selectors {
 		active[flag+":"+value] = true
 	}
-	for flag, value := range axes {
+	for flag, value := range overlays {
 		active[flag+":"+value] = true
 	}
 	for _, m := range manifests {
@@ -298,18 +306,23 @@ func checkIncompatibilities(manifests []*jig.Jig, selectors, axes map[string]str
 }
 
 // validFlagsFor builds the list shown when an unknown flag is rejected: the engine's own flags,
-// one per optional axis, every selector consumed on the way to the leaf, and every variable the
-// resolved templates declare.
-func validFlagsFor(axes []discovery.Axis, walk *discovery.WalkResult, manifests []*jig.Jig) []string {
+// one per optional dimension, every selector consumed on the way to the leaf, and every variable
+// the resolved templates declare.
+func validFlagsFor(dimensions []discovery.Dimension, walk *discovery.WalkResult, manifests []*jig.Jig) []string {
 	valid := append([]string{}, engineFlags...)
-	for _, axis := range axes {
-		if !axis.Required {
-			valid = append(valid, axis.Flag)
+	for _, dim := range dimensions {
+		if !dim.Required {
+			valid = append(valid, dim.Flag)
 		}
 	}
 	if walk != nil {
 		for _, step := range walk.Steps {
 			valid = append(valid, step.Flag)
+		}
+		for _, cp := range walk.Checkpoints {
+			for _, d := range cp.Overlays {
+				valid = append(valid, d.Flag)
+			}
 		}
 	}
 	for _, m := range manifests {
@@ -339,7 +352,7 @@ func printRendered(out io.Writer, files []render.File) {
 }
 
 func printSelection(out io.Writer, p *plan) {
-	if len(p.Walk.Steps) == 0 && len(p.SelectedAxes) == 0 {
+	if len(p.Walk.Steps) == 0 && len(p.SelectedOverlays) == 0 {
 		return
 	}
 	fmt.Fprint(out, "Selected:")
@@ -349,7 +362,7 @@ func printSelection(out io.Writer, p *plan) {
 			fmt.Fprint(out, "(default)")
 		}
 	}
-	for flag, value := range p.SelectedAxes {
+	for flag, value := range p.SelectedOverlays {
 		fmt.Fprintf(out, " --%s=%s", flag, value)
 	}
 	fmt.Fprintln(out)

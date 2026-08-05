@@ -1,6 +1,6 @@
 // Package cmd implements the scaffold CLI's command tree: a positional, kubectl-style grammar -
-// `scaffold create <framework> <category> <name> [--flag=value ...]` and
-// `scaffold list [<framework>] [<category>]` - with everything inside the flags fully dynamic.
+// `scaffold create <scaffold> <template> <name> [--flag=value ...]` and
+// `scaffold list [<scaffold>] [<template>]` - with everything inside the flags fully dynamic.
 package cmd
 
 import (
@@ -19,9 +19,9 @@ func Execute() error {
 		Use:     "scaffold",
 		Short:   "Universal scaffolding engine (PRD v2.0)",
 		Version: Version,
-		Long: "A universal, dynamically-extensible scaffolding engine. Frameworks, versions, " +
-			"axes, categories, selector values, and even the CLI flag names themselves are all " +
-			"declared by jigs under scaffolding-code/ at runtime - none are hardcoded " +
+		Long: "A universal, dynamically-extensible scaffolding engine. Scaffolds, versions, " +
+			"dimensions, templates, selector values, and even the CLI flag names themselves are " +
+			"all declared by jigs under scaffolding-code/ at runtime - none are hardcoded " +
 			"(PRD Section 13.1).",
 		SilenceErrors: true, // main() prints the error; without this cobra prints it too
 		SilenceUsage:  true, // a runtime failure is not a usage problem

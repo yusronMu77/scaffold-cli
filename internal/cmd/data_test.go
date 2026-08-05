@@ -89,8 +89,8 @@ data:
 
 	values := filepath.Join(t.TempDir(), "values.yaml")
 	writeFile(t, filepath.Dir(values), "values.yaml", `
-framework: fw
-category: services
+scaffold: fw
+template: services
 name: payment
 function: web
 data:
@@ -113,8 +113,8 @@ func TestData_TopLevelStructureInValuesFilePointsAtData(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	values := filepath.Join(t.TempDir(), "values.yaml")
 	writeFile(t, filepath.Dir(values), "values.yaml", `
-framework: fw
-category: services
+scaffold: fw
+template: services
 name: payment
 features:
   audit: true

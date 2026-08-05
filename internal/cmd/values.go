@@ -15,10 +15,10 @@ import (
 
 // Aliases for the reserved values-file keys, which live in internal/jig/reserved.go.
 const (
-	keyFramework = jig.KeyFramework
-	keyCategory  = jig.KeyCategory
-	keyName      = jig.KeyName
-	keyData      = jig.KeyData
+	keyScaffold = jig.KeyScaffold
+	keyTemplate = jig.KeyTemplate
+	keyName     = jig.KeyName
+	keyData     = jig.KeyData
 )
 
 // loadValuesFiles reads every -f file in order, returning the flat flag map and the merged `data:`
@@ -113,9 +113,9 @@ func scalarToString(v any) (string, bool) {
 }
 
 // applyValuesFile folds file-supplied values into the parsed arguments, with command-line flags
-// always winning over values-file entries. Returns the resolved positionals (framework, category,
+// always winning over values-file entries. Returns the resolved positionals (scaffold, template,
 // name), which may come from either source.
-func applyValuesFile(args *parsedArgs) (framework, category, name string, err error) {
+func applyValuesFile(args *parsedArgs) (scaffold, template, name string, err error) {
 	values, data, err := loadValuesFiles(args.valuesFiles)
 	if err != nil {
 		return "", "", "", err
@@ -130,8 +130,8 @@ func applyValuesFile(args *parsedArgs) (framework, category, name string, err er
 
 	// The three positionals may be given either way; reserved keys are marked consumed so the
 	// unknown-flag check does not complain about them.
-	args.markConsumed(keyFramework, keyCategory, keyName, keyData)
-	positional := []string{keyFramework, keyCategory, keyName}
+	args.markConsumed(keyScaffold, keyTemplate, keyName, keyData)
+	positional := []string{keyScaffold, keyTemplate, keyName}
 	resolved := make([]string, 3)
 	for i, key := range positional {
 		switch {
@@ -155,7 +155,7 @@ func applyValuesFile(args *parsedArgs) (framework, category, name string, err er
 	if len(missing) > 0 {
 		hint := "pass them positionally, or set them in a values file passed with -f"
 		if len(args.valuesFiles) == 0 {
-			hint = "usage: scaffold create <framework> <category> <name> [--flag=value ...]\n" +
+			hint = "usage: scaffold create <scaffold> <template> <name> [--flag=value ...]\n" +
 				"or supply them in a values file: scaffold create -f values.yaml"
 		}
 		return "", "", "", fmt.Errorf("missing required argument(s): %s\n%s",

@@ -31,9 +31,9 @@ func buildScaffoldingCode(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 
-	writeFile(t, root, "jig.yaml", "name: root\nframeworks:\n  - name: fw\n    description: Test framework\n")
+	writeFile(t, root, "jig.yaml", "name: root\nvalues:\n  - name: fw\n    description: Test scaffold\n")
 
-	// Framework level: the shared file plus the variables every version inherits.
+	// Scaffold level: the shared file plus the variables every version inherits.
 	fw := filepath.Join(root, "fw")
 	writeFile(t, fw, "jig.yaml", `
 name: fw
@@ -101,6 +101,97 @@ merge:
 		"name: MS\ndependencies:\n  - groupId: org.springframework.cloud\n    artifactId: openfeign\n")
 
 	return root
+}
+
+// buildNestedDimensionScaffold builds a minimal, separate tree whose one template ("widget") has
+// a NESTED dimension checkpoint of its own: widget/jig.yaml declares no `selector:`, just a bare
+// `values:` with one required child (core/) and one optional overlay (extra-logging/, its own
+// flag "logging", itself a dimension folder whose own subfolder "verbose/" is the value) - the
+// exact same required-plus-optional-overlay shape as the top-level templates/patterns split, just
+// one level deeper. Kept separate from buildScaffoldingCode so this new mechanism can't perturb
+// the many existing tests built on that fixture.
+func buildNestedDimensionScaffold(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+
+	writeFile(t, root, "jig.yaml", "name: root\nvalues:\n  - name: w\n")
+	writeFile(t, filepath.Join(root, "w"), "jig.yaml", "name: w\nvalues:\n  - name: \"1.0\"\n    default: true\n")
+
+	v := filepath.Join(root, "w", "1.0")
+	writeFile(t, v, "jig.yaml", "name: v\nvalues:\n  - name: templates\n")
+
+	tmpl := filepath.Join(v, "templates")
+	writeFile(t, tmpl, "jig.yaml", "name: T\nrequired: true\nvalues:\n  - name: widget\n    default: true\n")
+
+	widget := filepath.Join(tmpl, "widget")
+	writeFile(t, widget, "jig.yaml", `
+name: Widget
+values:
+  - name: core
+  - name: extra-logging
+    flag: logging
+`)
+	writeFile(t, filepath.Join(widget, "core"), "jig.yaml",
+		"name: Core\nrequired: true\nfiles:\n  - path: core.txt\n    template: false\n")
+	writeFile(t, filepath.Join(widget, "core"), "core.txt", "core file\n")
+
+	writeFile(t, filepath.Join(widget, "extra-logging"), "jig.yaml", "name: Extra Logging\nvalues:\n  - name: verbose\n")
+	writeFile(t, filepath.Join(widget, "extra-logging", "verbose"), "jig.yaml",
+		"name: Verbose\nmerge_priority: 5\nfiles:\n  - path: logging.txt\n    template: false\n")
+	writeFile(t, filepath.Join(widget, "extra-logging", "verbose"), "logging.txt", "logging overlay file\n")
+
+	return root
+}
+
+// A nested dimension checkpoint's required child (core/) is always applied - the exact same
+// "auto-continue, no flag needed" behaviour as the top-level required dimension.
+func TestCreate_NestedDimensionRequiredChildAlwaysApplies(t *testing.T) {
+	root := buildNestedDimensionScaffold(t)
+	outDir := t.TempDir()
+
+	if _, err := run(t, newCreateCommand, "w", "widget", "plain",
+		"--scaffolding-code="+root, "--output="+outDir); err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "plain", "core.txt")); err != nil {
+		t.Errorf("expected the nested checkpoint's required child to always be applied: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "plain", "logging.txt")); err == nil {
+		t.Errorf("expected the nested checkpoint's optional overlay to be ABSENT when its flag is unset")
+	}
+}
+
+// Setting the nested checkpoint's own flag (--logging=verbose) applies its overlay ON TOP OF the
+// required child - proving overlays can be selected at any depth, not just the top level.
+func TestCreate_NestedDimensionOptionalOverlayAppliesWhenFlagged(t *testing.T) {
+	root := buildNestedDimensionScaffold(t)
+	outDir := t.TempDir()
+
+	if _, err := run(t, newCreateCommand, "w", "widget", "logged",
+		"--logging=verbose", "--scaffolding-code="+root, "--output="+outDir); err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "logged", "core.txt")); err != nil {
+		t.Errorf("expected the required child to still be applied alongside the overlay: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "logged", "logging.txt")); err != nil {
+		t.Errorf("expected --logging=verbose to apply the nested overlay: %v", err)
+	}
+}
+
+// An unregistered value for a nested overlay's own flag is rejected exactly like a top-level
+// axis flag typo would be - the same validation, just triggered from a deeper checkpoint.
+func TestCreate_NestedDimensionOverlayRejectsUnknownValue(t *testing.T) {
+	root := buildNestedDimensionScaffold(t)
+
+	_, err := run(t, newCreateCommand, "w", "widget", "bad",
+		"--logging=verboze", "--scaffolding-code="+root, "--output="+t.TempDir())
+	if err == nil {
+		t.Fatal("expected an unregistered --logging value to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "verbose") {
+		t.Errorf("expected the error to list the valid value 'verbose', got: %v", err)
+	}
 }
 
 // TestMain moves the whole test binary into a throwaway directory before anything runs, since
@@ -424,8 +515,8 @@ func TestCreate_ValuesFileSuppliesEverything(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	outDir := t.TempDir()
 	vf := writeValues(t, t.TempDir(), "values.yaml", `
-framework: fw
-category: services
+scaffold: fw
+template: services
 name: payment
 function: web
 package: com.acme.billing
@@ -449,8 +540,8 @@ func TestCreate_CommandLineOverridesValuesFile(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	outDir := t.TempDir()
 	vf := writeValues(t, t.TempDir(), "values.yaml", `
-framework: fw
-category: services
+scaffold: fw
+template: services
 name: from-file
 function: web
 package: com.from.file
@@ -472,8 +563,8 @@ func TestCreate_LaterValuesFileOverridesEarlier(t *testing.T) {
 	outDir := t.TempDir()
 	dir := t.TempDir()
 	base := writeValues(t, dir, "base.yaml", `
-framework: fw
-category: services
+scaffold: fw
+template: services
 name: layered
 function: web
 package: com.base
@@ -515,8 +606,8 @@ output: `+outDir+`
 func TestCreate_ValuesFileTypoIsRejected(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	vf := writeValues(t, t.TempDir(), "values.yaml", `
-framework: fw
-category: services
+scaffold: fw
+template: services
 name: payment
 function: web
 packge: com.acme
@@ -537,16 +628,16 @@ scaffolding-code: `+root+`
 func TestCreate_ValuesFileStillRequiresAllThreePositionals(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	vf := writeValues(t, t.TempDir(), "values.yaml", `
-framework: fw
+scaffold: fw
 function: web
 scaffolding-code: `+root+`
 `)
 
 	_, err := run(t, newCreateCommand, "-f", vf)
 	if err == nil {
-		t.Fatal("expected missing category/name to be rejected, got nil")
+		t.Fatal("expected missing template/name to be rejected, got nil")
 	}
-	for _, want := range []string{"category", "name"} {
+	for _, want := range []string{"template", "name"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("expected the error to name the missing %q, got: %v", want, err)
 		}
@@ -557,8 +648,8 @@ scaffolding-code: `+root+`
 func TestCreate_ValuesFileRejectsNestedStructures(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	vf := writeValues(t, t.TempDir(), "values.yaml", `
-framework: fw
-category: services
+scaffold: fw
+template: services
 name: payment
 nested:
   a: 1
