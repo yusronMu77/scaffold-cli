@@ -1,5 +1,5 @@
 // Package jig defines the jig.yaml schema shared by every folder under
-// scaffolding-code/<framework>/<version>/. A jig is a selector node, a registry, or a leaf
+// scaffolding-code/<scaffold>/<version>/. A jig is a selector node, a registry, or a leaf
 // template, distinguished by which fields are present.
 package jig
 
@@ -174,17 +174,17 @@ type Jig struct {
 	Selector string `yaml:"selector,omitempty"`
 
 	// Default is the child value assumed when --<Selector> is omitted at a selector node.
-	// Not used for axis-level registries — those use Values' per-entry Default flag instead.
+	// Not used for dimension-level registries — those use Values' per-entry Default flag instead.
 	Default string `yaml:"default,omitempty"`
 
-	// Values explicitly registers what's available under this folder (categories, pattern
-	// names, or any axis), so a stray folder can't silently become a usable value. Optional —
-	// if empty, callers fall back to directory listing.
+	// Values explicitly registers what's available under this folder (templates, pattern
+	// names, or any dimension), so a stray folder can't silently become a usable value. Optional
+	// — if empty, callers fall back to directory listing.
 	Values []Entry `yaml:"values,omitempty"`
 
-	// Required marks this axis-level jig's own folder as the mandatory base axis. If no axis
-	// jig declares this, discovery falls back to treating a folder literally named "templates"
-	// as required, for backward compatibility.
+	// Required marks this dimension's own folder as the one whose walk resolves <template> - the
+	// second CLI positional. If no dimension jig declares this, discovery falls back to treating
+	// a folder literally named "templates" as required, for backward compatibility.
 	Required bool `yaml:"required,omitempty"`
 
 	Variables []Variable   `yaml:"variables,omitempty"`
@@ -223,12 +223,12 @@ type Jig struct {
 	// is the motivating case. Format is inferred from the extension (.yml/.yaml, .json today).
 	Merge []string `yaml:"merge,omitempty"`
 
-	// MergePriority orders file-overlay precedence when multiple axes are selected at once.
-	// Higher applies later (wins on same-path collisions). The base "templates" axis is
+	// MergePriority orders file-overlay precedence when multiple overlays are selected at once.
+	// Higher applies later (wins on same-path collisions). The template dimension itself is
 	// implicitly always first regardless of this value.
 	MergePriority int `yaml:"merge_priority,omitempty"`
 
-	// IncompatibleWith lists other axis:value selections this leaf/value can't be combined
+	// IncompatibleWith lists other flag:value selections this leaf/value can't be combined
 	// with, e.g. "protocol:rest-http".
 	IncompatibleWith []string `yaml:"incompatible_with,omitempty"`
 }
@@ -318,9 +318,9 @@ func (m *Jig) IsLeaf() bool { return m.Shape() == ShapeLeaf }
 func (m *Jig) IsRegistry() bool { return m.Shape() == ShapeRegistry }
 
 // Validate checks a jig for combinations that cannot mean anything coherent — e.g. a variable or
-// computed value with no name, or a malformed verify command. A metadata-only jig is allowed (an
-// axis needs nothing more), and so is `selector:` combined with content, since every level may
-// contribute shared content under the inheritance model.
+// computed value with no name, or a malformed verify command. A metadata-only jig is allowed (a
+// dimension needs nothing more), and so is `selector:` combined with content, since every level
+// may contribute shared content under the inheritance model.
 func (m *Jig) Validate(path string) error {
 	for i, c := range m.Computed {
 		if c.Name == "" || c.Value == "" {
@@ -397,10 +397,11 @@ func LoadOptional(path string) (*Jig, error) {
 	return m, err
 }
 
-// Entry is one named, described item in an explicit registry list — a framework in
-// scaffolding-code/jig.yaml, an axis, a category, a pattern, or any future axis's own list. Name
-// is its CLI-facing identity, Path is its folder on disk (defaults to Name), and Flag is the CLI
-// flag that selects it when chosen by flag rather than positionally (defaults to Name).
+// Entry is one named, described item in an explicit registry list — a scaffold in
+// scaffolding-code/jig.yaml, a version, a dimension, a template, a pattern, or any future
+// dimension's own list. Name is its CLI-facing identity, Path is its folder on disk (defaults to
+// Name), and Flag is the CLI flag that selects it when chosen by flag rather than positionally
+// (defaults to Name).
 type Entry struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
@@ -410,7 +411,8 @@ type Entry struct {
 
 	// Inherits names another entry at the same level whose content this one builds on — e.g. a
 	// Spring Boot 3.2 entry inheriting from 2.7 so only the actual differences need declaring.
-	// Only meaningful for versions today.
+	// Available at any registry level, not just versions - a version is simply the level that
+	// happens to use it most.
 	Inherits string `yaml:"inherits,omitempty"`
 }
 
@@ -430,19 +432,6 @@ func (e Entry) FlagName() string {
 	return e.Name
 }
 
-// Framework is an Entry in the root registry (scaffolding-code/jig.yaml) - kept as a
-// distinct name for readability at call sites, same underlying shape as any other Entry.
-type Framework = Entry
-
-// RootJig is scaffolding-code/jig.yaml, the explicit registry of supported frameworks — read
-// instead of a raw directory listing so stray folders like .git or .vscode are never treated as a
-// framework.
-type RootJig struct {
-	Name        string      `yaml:"name"`
-	Description string      `yaml:"description"`
-	Frameworks  []Framework `yaml:"frameworks"`
-}
-
 // decodeStrict parses YAML with unknown fields rejected, so a misspelled field (e.g.
 // "dependancies") fails loudly instead of being silently ignored.
 func decodeStrict(data []byte, into any, path string) error {
@@ -457,39 +446,19 @@ func decodeStrict(data []byte, into any, path string) error {
 	return nil
 }
 
-// FindFramework looks up a framework by its CLI-facing name.
-func (r *RootJig) FindFramework(name string) (Framework, bool) {
-	for _, f := range r.Frameworks {
-		if f.Name == name {
-			return f, true
-		}
-	}
-	return Framework{}, false
-}
-
-// FrameworkNames returns every registered framework's CLI-facing name, for error messages.
-func (r *RootJig) FrameworkNames() []string {
-	names := make([]string, 0, len(r.Frameworks))
-	for _, f := range r.Frameworks {
-		names = append(names, f.Name)
-	}
-	return names
-}
-
-// LoadRoot reads and parses the mandatory framework registry at scaffolding-code/jig.yaml; unlike
-// every other level, falling back to directory listing here is not allowed.
-func LoadRoot(path string) (*RootJig, error) {
-	data, err := os.ReadFile(path)
+// LoadRoot reads and parses the mandatory scaffold registry at scaffolding-code/jig.yaml. It is an
+// ordinary Jig, same shape as every other registry level - the root's only special behaviour is
+// that, unlike every other level, falling back to directory listing here is not allowed: without
+// an explicit `values:` list, a stray folder like .git or .vscode would be registered as a
+// scaffold.
+func LoadRoot(path string) (*Jig, error) {
+	m, err := Load(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading root jig at %s: %w", path, err)
+		return nil, fmt.Errorf("loading root jig: %w", err)
 	}
-	var m RootJig
-	if err := decodeStrict(data, &m, path); err != nil {
-		return nil, err
-	}
-	if len(m.Frameworks) == 0 {
-		return nil, fmt.Errorf("root jig at %s registers no frameworks (a `frameworks:` "+
+	if len(m.Values) == 0 {
+		return nil, fmt.Errorf("root jig at %s registers no scaffolds (a `values:` "+
 			"list is required - see PRD Section 4.1)", path)
 	}
-	return &m, nil
+	return m, nil
 }

@@ -1,5 +1,5 @@
-// Package discovery implements version resolution, top-level axis discovery, and the
-// recursive category selector walk. Frameworks, categories, axes, and selector values are
+// Package discovery implements version resolution, top-level dimension discovery, and the
+// recursive template selector walk. Scaffolds, templates, dimensions, and selector values are
 // never hardcoded - everything is discovered from what's on disk and from jig.yaml content.
 package discovery
 
@@ -15,25 +15,25 @@ import (
 	"scaffold-engine-go/internal/jig"
 )
 
-// ResolveFrameworkPath looks up name (the CLI-facing identifier) in the scaffolding-code root
-// registry and returns the actual on-disk directory to use, applying a framework's optional
+// ResolveScaffoldPath looks up name (the CLI-facing identifier) in the scaffolding-code root
+// registry and returns the actual on-disk directory to use, applying a scaffold's optional
 // `path` alias rather than assuming the folder matches its name.
-func ResolveFrameworkPath(scaffoldingCodeRoot, name string) (string, error) {
+func ResolveScaffoldPath(scaffoldingCodeRoot, name string) (string, error) {
 	root, err := jig.LoadRoot(filepath.Join(scaffoldingCodeRoot, jig.FileName))
 	if err != nil {
-		return "", fmt.Errorf("loading framework registry: %w", err)
+		return "", fmt.Errorf("loading scaffold registry: %w", err)
 	}
 
-	fw, ok := root.FindFramework(name)
+	sc, ok := root.FindValue(name)
 	if !ok {
-		return "", fmt.Errorf("unknown framework %q (known: %s)",
-			name, strings.Join(root.FrameworkNames(), ", "))
+		return "", fmt.Errorf("unknown scaffold %q (known: %s)",
+			name, strings.Join(root.ValueNames(), ", "))
 	}
-	if err := ValidateSegment("framework folder", fw.DirName()); err != nil {
+	if err := ValidateSegment("scaffold folder", sc.DirName()); err != nil {
 		return "", err
 	}
 
-	return filepath.Join(scaffoldingCodeRoot, fw.DirName()), nil
+	return filepath.Join(scaffoldingCodeRoot, sc.DirName()), nil
 }
 
 // ValidateSegment rejects a value that would escape the directory it is joined onto. Every value
@@ -55,11 +55,28 @@ func ValidateSegment(what, value string) error {
 	return nil
 }
 
-// ResolveVersion picks the version folder to use under scaffolding-code/<framework>/. An
+// VersionSelectorFlag returns the CLI flag name that chooses a version at scaffoldPath, read from
+// that scaffold's own `selector:` field - the exact same mechanism a selector node like
+// services/jig.yaml uses to name its own flag (PRD 7.1). A version is not a special engine
+// concept; it is simply the level that most often wants `inherits:` between its entries. Falls
+// back to "scaffold-version" when the scaffold's jig.yaml doesn't declare one, the same
+// backward-compatible spirit as the required dimension's "templates" name fallback.
+func VersionSelectorFlag(scaffoldPath string) (string, error) {
+	m, err := jig.LoadOptional(filepath.Join(scaffoldPath, jig.FileName))
+	if err != nil {
+		return "", fmt.Errorf("reading version registry under %s: %w", scaffoldPath, err)
+	}
+	if m != nil && m.Selector != "" {
+		return m.Selector, nil
+	}
+	return "scaffold-version", nil
+}
+
+// ResolveVersion picks the version folder to use under scaffolding-code/<scaffold>/. An
 // explicit value is validated and aliased through the registry; otherwise the registry's
 // `default: true` entry wins, or failing that the highest version folder present, compared
 // with a lenient numeric comparator since folder names like "3.2.x" aren't strict semver. The
-// framework-level jig.yaml is optional - missing it falls back to plain directory listing.
+// scaffold-level jig.yaml is optional - missing it falls back to plain directory listing.
 func ResolveVersion(frameworkPath, explicit string) (string, error) {
 	m, err := jig.LoadOptional(filepath.Join(frameworkPath, jig.FileName))
 	if err != nil {
@@ -194,33 +211,34 @@ func ResolveVersionChain(frameworkPath, explicit string) ([]string, error) {
 	return chain, nil
 }
 
-// Axis describes one axis registered under <framework>/<version>/. Exactly one axis is the
-// required base axis; every other one is an optional overlay axis, whatever it's named. Name,
+// Dimension describes one top-level dimension registered under <scaffold>/<version>/. Exactly
+// one dimension is required - its walk is what resolves the <template> positional; every other
+// one is an optional overlay, whatever it's named (e.g. folder patterns/ with flag "style"). Name,
 // Dir, and Flag are distinct identities and callers must use the right one - building a path
 // from Name instead of Dir silently drops a `path` alias.
-type Axis struct {
+type Dimension struct {
 	Name        string // identity: what `scaffold list` shows
 	Dir         string // physical folder name on disk (Path alias applied); use this to build paths
-	Flag        string // CLI flag name that selects this axis; never derived from the folder name
-	Description string // from the axis folder's own jig.yaml, if present; else empty
+	Flag        string // CLI flag name that selects this dimension; never derived from the folder name
+	Description string // from the dimension folder's own jig.yaml, if present; else empty
 	Required    bool
 	Values      []string
-	// entries is the axis's own registry, if any, used to validate and alias a selected value.
-	// Nil means Values came from directory listing.
+	// entries is the dimension's own registry, if any, used to validate and alias a selected
+	// value. Nil means Values came from directory listing.
 	entries []jig.Entry
 }
 
-// Path returns the on-disk directory for this axis under versionPath. Always prefer this over
-// joining Name yourself.
-func (a Axis) Path(versionPath string) string {
+// Path returns the on-disk directory for this dimension under versionPath. Always prefer this
+// over joining Name yourself.
+func (a Dimension) Path(versionPath string) string {
 	return filepath.Join(versionPath, a.Dir)
 }
 
-// ResolveValueDir validates a user-selected value for this axis and returns the folder to read.
-// When the axis has a registry, that registry is authoritative - an unregistered folder is
-// rejected and a registered one may be aliased to a different folder name. Without a registry
-// it accepts any existing subfolder.
-func (a Axis) ResolveValueDir(versionPath, value string) (string, error) {
+// ResolveValueDir validates a user-selected value for this dimension and returns the folder to
+// read. When the dimension has a registry, that registry is authoritative - an unregistered
+// folder is rejected and a registered one may be aliased to a different folder name. Without a
+// registry it accepts any existing subfolder.
+func (a Dimension) ResolveValueDir(versionPath, value string) (string, error) {
 	if err := ValidateSegment(fmt.Sprintf("value for --%s", a.Flag), value); err != nil {
 		return "", err
 	}
@@ -240,7 +258,7 @@ func (a Axis) ResolveValueDir(versionPath, value string) (string, error) {
 	return dir, nil
 }
 
-func (a Axis) findEntry(name string) (jig.Entry, bool) {
+func (a Dimension) findEntry(name string) (jig.Entry, bool) {
 	for _, e := range a.entries {
 		if e.Name == name {
 			return e, true
@@ -249,85 +267,95 @@ func (a Axis) findEntry(name string) (jig.Entry, bool) {
 	return jig.Entry{}, false
 }
 
-// DiscoverAxes scans <framework>/<version>/ and returns one Axis per registered axis. Must run
-// before any CLI flags are registered, since flags can't be added reliably from inside a cobra
-// Run callback.
+// DiscoverDimensions scans <scaffold>/<version>/ and returns one Dimension per registered
+// dimension. Must run before any CLI flags are registered, since flags can't be added reliably
+// from inside a cobra Run callback.
 //
-// Which axes exist is itself an optional registry: a jig.yaml directly under versionPath can
-// list its axes via `values:`, each with an optional `path` alias, making axis names and count
-// entirely data-driven. With no version-level jig.yaml, discovery falls back to plain
+// Which dimensions exist is itself an optional registry: a jig.yaml directly under versionPath
+// can list them via `values:`, each with an optional `path` alias, making dimension names and
+// count entirely data-driven. With no version-level jig.yaml, discovery falls back to plain
 // directory listing.
 //
-// Each axis-level jig.yaml is separately optional; if present its `values:` list becomes
-// authoritative for Axis.Values and its Description/Required fields enrich the axis, otherwise
-// Axis.Values falls back to directory listing of that axis's own folder.
+// Each dimension-level jig.yaml is separately optional; if present its `values:` list becomes
+// authoritative for Dimension.Values and its Description/Required fields enrich the dimension,
+// otherwise Dimension.Values falls back to directory listing of that dimension's own folder.
 //
-// Required is preferred from an axis's own `required: true` field; a folder literally named
+// Required is preferred from a dimension's own `required: true` field; a folder literally named
 // "templates" with no such declaration still falls back to being treated as required.
-func DiscoverAxes(versionPath string) ([]Axis, error) {
-	entries, err := listAxisEntries(versionPath)
+func DiscoverDimensions(versionPath string) ([]Dimension, error) {
+	entries, err := listDimensionEntries(versionPath)
 	if err != nil {
-		return nil, fmt.Errorf("discovering axes under %s: %w", versionPath, err)
+		return nil, fmt.Errorf("discovering dimensions under %s: %w", versionPath, err)
 	}
+	return dimensionsFromEntries(versionPath, entries)
+}
 
-	axes := make([]Axis, 0, len(entries))
+// dimensionsFromEntries turns registry entries into fully-described Dimensions, loading each
+// candidate's own jig.yaml to read its Required/Description/child values. This is the one place
+// "which of my children is the required one, and which are optional overlays" is decided, and it
+// is deliberately reusable: DiscoverDimensions calls it for the top-level dimension list
+// (<scaffold>/<version>/), and WalkCategoryChain calls it again for every nested dimension
+// checkpoint found while walking a template - same mechanism, any depth (PRD Section 0).
+func dimensionsFromEntries(basePath string, entries []jig.Entry) ([]Dimension, error) {
+	dimensions := make([]Dimension, 0, len(entries))
 	anyDeclaredRequired := false
 
 	for _, entry := range entries {
-		if err := ValidateSegment("axis folder", entry.DirName()); err != nil {
+		if err := ValidateSegment("dimension folder", entry.DirName()); err != nil {
 			return nil, err
 		}
-		axisPath := filepath.Join(versionPath, entry.DirName())
+		dimensionPath := filepath.Join(basePath, entry.DirName())
 
-		axis := Axis{
+		dim := Dimension{
 			Name: entry.Name,
 			Dir:  entry.DirName(),
 			Flag: entry.FlagName(),
 		}
 
-		m, err := jig.LoadOptional(filepath.Join(axisPath, jig.FileName))
+		m, err := jig.LoadOptional(filepath.Join(dimensionPath, jig.FileName))
 		if err != nil {
-			return nil, fmt.Errorf("reading axis %q: %w", entry.Name, err)
+			return nil, fmt.Errorf("reading dimension %q: %w", entry.Name, err)
 		}
 		if m != nil {
-			axis.Description = m.Description
-			axis.Required = m.Required
-			axis.entries = m.Values
+			dim.Description = m.Description
+			dim.Required = m.Required
+			dim.entries = m.Values
 			for _, v := range m.Values {
-				axis.Values = append(axis.Values, v.Name)
+				dim.Values = append(dim.Values, v.Name)
 			}
 		}
-		if axis.Required {
+		if dim.Required {
 			anyDeclaredRequired = true
 		}
-		if axis.Values == nil {
-			axis.Values, err = listSubdirs(axisPath)
+		if dim.Values == nil {
+			dim.Values, err = listSubdirs(dimensionPath)
 			if err != nil {
 				return nil, err
 			}
 		}
 
-		axes = append(axes, axis)
+		dimensions = append(dimensions, dim)
 	}
 
-	// The "templates" name fallback applies only when no axis declared `required: true` anywhere,
-	// to avoid ending up with two required axes.
+	// The "templates" name fallback applies only when no dimension declared `required: true`
+	// anywhere, to avoid ending up with two required dimensions. Applies at any depth, not just
+	// the top level - a nested checkpoint gets the same backward-compatible convenience.
 	if !anyDeclaredRequired {
-		for i := range axes {
-			if axes[i].Name == "templates" {
-				axes[i].Required = true
+		for i := range dimensions {
+			if dimensions[i].Name == "templates" {
+				dimensions[i].Required = true
 				break
 			}
 		}
 	}
 
-	return axes, nil
+	return dimensions, nil
 }
 
-// listAxisEntries returns the registry entries for the axes under versionPath: the registry's
-// `values:` list when non-empty, otherwise one synthesized entry per subfolder so downstream
-// code has a single shape to work with.
-func listAxisEntries(versionPath string) ([]jig.Entry, error) {
+// listDimensionEntries returns the registry entries for the dimensions under versionPath: the
+// registry's `values:` list when non-empty, otherwise one synthesized entry per subfolder so
+// downstream code has a single shape to work with.
+func listDimensionEntries(versionPath string) ([]jig.Entry, error) {
 	m, err := jig.LoadOptional(filepath.Join(versionPath, jig.FileName))
 	if err != nil {
 		return nil, err
@@ -347,41 +375,98 @@ func listAxisEntries(versionPath string) ([]jig.Entry, error) {
 	return entries, nil
 }
 
-// RequiredAxis returns the one Axis marked Required from an already-discovered list - the base
-// axis whose values are the categories selectable via `scaffold create <framework> <category>
-// <name>`. More than one required axis is a configuration error.
-func RequiredAxis(axes []Axis) (Axis, error) {
-	var found []Axis
-	for _, a := range axes {
-		if a.Required {
-			found = append(found, a)
+// VersionStructure is what a resolved version chain turns out to be: a container with a
+// `templates` dimension for <template> to walk (Dimensions/StructurePath), or - when no version
+// in the chain declares one - the version itself acting as the leaf template (Leaf/LeafPath).
+type VersionStructure struct {
+	Dimensions    []Dimension
+	StructurePath string
+
+	Leaf     *jig.Jig
+	LeafPath string
+}
+
+// ResolveVersionStructure walks the chain from most-derived to base looking for a version that
+// declares a usable `templates` dimension, same order and fallback as version inheritance always
+// uses. Only if none do, it checks whether the most-derived version's own jig.yaml is a leaf on
+// its own; this order keeps an ordinary version like "2.7.x", whose own jig.yaml only overrides a
+// couple of variables, correctly reading as a container once its base's dimension is found.
+func ResolveVersionStructure(versionPaths []string) (VersionStructure, error) {
+	var lastErr error
+	for i := len(versionPaths) - 1; i >= 0; i-- {
+		vp := versionPaths[i]
+		dimensions, err := DiscoverDimensions(vp)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		base, err := RequiredDimension(dimensions)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		// The dimension folder existing is not enough - it must declare itself via a manifest, or a
+		// version that merely has the directory on the way to an overridden file would be mistaken
+		// for one that defines the structure.
+		if _, statErr := os.Stat(filepath.Join(base.Path(vp), jig.FileName)); statErr != nil {
+			lastErr = fmt.Errorf("dimension %q under %s has no %s", base.Name, vp, jig.FileName)
+			continue
+		}
+		return VersionStructure{Dimensions: dimensions, StructurePath: vp}, nil
+	}
+
+	// No version in the chain declares a `templates` dimension. The most-derived version may still
+	// be usable on its own, the same fallback Shape() gives any leaf node.
+	leafPath := versionPaths[len(versionPaths)-1]
+	m, err := jig.LoadOptional(filepath.Join(leafPath, jig.FileName))
+	if err != nil {
+		return VersionStructure{}, err
+	}
+	if m != nil && m.Shape() == jig.ShapeLeaf {
+		return VersionStructure{Leaf: m, LeafPath: leafPath}, nil
+	}
+
+	if lastErr != nil {
+		return VersionStructure{}, lastErr
+	}
+	return VersionStructure{}, fmt.Errorf("no version in the chain declares any dimension or leaf template")
+}
+
+// RequiredDimension returns the one Dimension marked Required from an already-discovered list -
+// the dimension whose values are the templates selectable via `scaffold create <scaffold>
+// <template> <name>`. More than one required dimension is a configuration error.
+func RequiredDimension(dimensions []Dimension) (Dimension, error) {
+	var found []Dimension
+	for _, d := range dimensions {
+		if d.Required {
+			found = append(found, d)
 		}
 	}
 	switch len(found) {
 	case 1:
 		return found[0], nil
 	case 0:
-		return Axis{}, fmt.Errorf("no axis marked required (expected exactly one: a folder named "+
-			"\"templates\", or an axis with `required: true` in its %s)", jig.FileName)
+		return Dimension{}, fmt.Errorf("no dimension marked required (expected exactly one: a "+
+			"folder named \"templates\", or a dimension with `required: true` in its %s)", jig.FileName)
 	default:
 		names := make([]string, 0, len(found))
-		for _, a := range found {
-			names = append(names, a.Name)
+		for _, d := range found {
+			names = append(names, d.Name)
 		}
-		return Axis{}, fmt.Errorf("%d axes are marked required (%s) - exactly one may be",
+		return Dimension{}, fmt.Errorf("%d dimensions are marked required (%s) - exactly one may be",
 			len(found), strings.Join(names, ", "))
 	}
 }
 
-// FindAxisByFlag looks up an axis by the CLI flag that selects it (its `flag` field, defaulting
-// to its name) - not by folder name.
-func FindAxisByFlag(axes []Axis, flag string) (Axis, bool) {
-	for _, a := range axes {
-		if a.Flag == flag {
-			return a, true
+// FindDimensionByFlag looks up a dimension by the CLI flag that selects it (its `flag` field,
+// defaulting to its name) - not by folder name.
+func FindDimensionByFlag(dimensions []Dimension, flag string) (Dimension, bool) {
+	for _, d := range dimensions {
+		if d.Flag == flag {
+			return d, true
 		}
 	}
-	return Axis{}, false
+	return Dimension{}, false
 }
 
 // SelectorStep records one level consumed while walking a category's selector chain.
@@ -389,6 +474,20 @@ type SelectorStep struct {
 	Flag      string
 	Value     string
 	Defaulted bool // true if Value came from the jig's `default` field, not a CLI flag
+}
+
+// DimensionCheckpoint records a nested dimension registry encountered while walking a template's
+// selector chain - the same required-plus-optional-overlays mechanism available at the top level
+// (<scaffold>/<version>/), just reachable at any depth. A node is a checkpoint, not a plain
+// selector, when its shape is ShapeRegistry (bare `values:`, no `selector:`): the walk continues
+// into whichever child is `required: true` (or the "templates" name fallback), and Overlays lists
+// every sibling that is not - available the same way top-level optional dimensions are, via each
+// one's own `flag`.
+type DimensionCheckpoint struct {
+	// Dir is where the checkpoint's own jig.yaml was read from - the base every Overlay's folder
+	// is resolved against.
+	Dir      string
+	Overlays []Dimension
 }
 
 // WalkCategoryChain is WalkCategory across a version inheritance chain. templatesPaths is
@@ -408,6 +507,7 @@ func WalkCategoryChain(templatesPaths []string, category string, selections map[
 	rel := category
 	var steps []SelectorStep
 	var chain []ChainNode
+	var checkpoints []DimensionCheckpoint
 
 	for {
 		dirs, m, err := resolveNode(templatesPaths, rel, category)
@@ -417,31 +517,51 @@ func WalkCategoryChain(templatesPaths []string, category string, selections map[
 		node := ChainNode{Dir: dirs[len(dirs)-1], Dirs: dirs, Manifest: m}
 		chain = append(chain, node)
 
-		if err := m.RequireNavigable(filepath.Join(node.Dir, jig.FileName)); err != nil {
-			return nil, fmt.Errorf("category %q: %w", category, err)
-		}
-		if m.Shape() != jig.ShapeSelector {
-			return &WalkResult{Leaf: m, LeafDir: node.Dir, Steps: steps, Chain: chain}, nil
-		}
-
-		flag := m.Selector
-		value, ok := selections[flag]
-		defaulted := false
-		if !ok {
-			if m.Default == "" {
-				return nil, fmt.Errorf("category %q requires --%s (one of: %s)",
-					category, flag, strings.Join(selectorValues(m, node.Dir), ", "))
+		switch m.Shape() {
+		case jig.ShapeSelector:
+			flag := m.Selector
+			value, ok := selections[flag]
+			defaulted := false
+			if !ok {
+				if m.Default == "" {
+					return nil, fmt.Errorf("category %q requires --%s (one of: %s)",
+						category, flag, strings.Join(selectorValues(m, node.Dir), ", "))
+				}
+				value = m.Default
+				defaulted = true
 			}
-			value = m.Default
-			defaulted = true
-		}
 
-		child, err := resolveSelectorName(m, node.Dir, flag, value)
-		if err != nil {
-			return nil, fmt.Errorf("category %q: %w", category, err)
+			child, err := resolveSelectorName(m, node.Dir, flag, value)
+			if err != nil {
+				return nil, fmt.Errorf("category %q: %w", category, err)
+			}
+			steps = append(steps, SelectorStep{Flag: flag, Value: value, Defaulted: defaulted})
+			rel = path.Join(rel, child)
+
+		case jig.ShapeRegistry:
+			dims, err := dimensionsFromEntries(node.Dir, m.Values)
+			if err != nil {
+				return nil, fmt.Errorf("category %q: nested dimensions at %s: %w", category, node.Dir, err)
+			}
+			required, err := RequiredDimension(dims)
+			if err != nil {
+				return nil, fmt.Errorf("category %q: nested dimensions at %s: %w", category, node.Dir, err)
+			}
+			var overlays []Dimension
+			for _, d := range dims {
+				if !d.Required {
+					overlays = append(overlays, d)
+				}
+			}
+			if len(overlays) > 0 {
+				checkpoints = append(checkpoints, DimensionCheckpoint{Dir: node.Dir, Overlays: overlays})
+			}
+			rel = path.Join(rel, required.Dir)
+
+		default:
+			// ShapeLeaf, or a shapeless jig that only inherits - either way the walk ends here.
+			return &WalkResult{Leaf: m, LeafDir: node.Dir, Steps: steps, Chain: chain, Checkpoints: checkpoints}, nil
 		}
-		steps = append(steps, SelectorStep{Flag: flag, Value: value, Defaulted: defaulted})
-		rel = path.Join(rel, child)
 	}
 }
 
@@ -535,6 +655,10 @@ type WalkResult struct {
 	Steps   []SelectorStep
 	// Chain is every node from the category root down to and including the leaf, in merge order.
 	Chain []ChainNode
+	// Checkpoints is every nested dimension registry encountered along the way (DimensionCheckpoint),
+	// each contributing its own optional overlays - resolved the same way the top-level dimension
+	// list is, just discovered mid-walk instead of once up front.
+	Checkpoints []DimensionCheckpoint
 }
 
 // WalkCategory walks templates/<category>/ down to its leaf jig, following the choices in
@@ -593,7 +717,7 @@ func WalkCategory(templatesPath, category string, selections map[string]string) 
 // resolveSelectorDir turns a selector value into the folder to descend into. When the selector
 // node declares a `values:` registry, that registry is authoritative and may alias a value to
 // a different folder; the segment check additionally stops a value like "../../patterns/x"
-// from walking out of the base axis.
+// from walking out of the base dimension.
 func resolveSelectorDir(m *jig.Jig, currentDir, flag, value string) (string, error) {
 	if err := ValidateSegment(fmt.Sprintf("value for --%s", flag), value); err != nil {
 		return "", err
@@ -643,7 +767,7 @@ func DescribeCategory(templatesPath, category string) (*jig.Jig, error) {
 func DefaultCategory(templatesPath string) (string, error) {
 	m, err := jig.Load(filepath.Join(templatesPath, jig.FileName))
 	if err != nil {
-		return "", fmt.Errorf("reading the base axis jig for a default category failed: %w", err)
+		return "", fmt.Errorf("reading the base dimension jig for a default category failed: %w", err)
 	}
 	if entry, ok := m.DefaultValue(); ok {
 		return entry.Name, nil
@@ -654,26 +778,26 @@ func DefaultCategory(templatesPath string) (string, error) {
 	return "", fmt.Errorf("the base axis jig declares no default category (neither a `values:` entry with `default: true` nor a top-level `default` field)")
 }
 
-// ResolveCategoryDir resolves a CLI-facing category name to its on-disk folder name via the
-// base axis jig's `values:` registry, same aliasing mechanism as ResolveFrameworkPath. When
-// that registry exists it is authoritative and rejects an unregistered category; with no
-// registry, any existing folder is accepted.
-func ResolveCategoryDir(templatesPath, name string) (string, error) {
-	if err := ValidateSegment("category", name); err != nil {
+// ResolveTemplateDir resolves a CLI-facing template name (the second positional, e.g. "services")
+// to its on-disk folder name via the base axis jig's `values:` registry, same aliasing mechanism
+// as ResolveScaffoldPath. When that registry exists it is authoritative and rejects an
+// unregistered template; with no registry, any existing folder is accepted.
+func ResolveTemplateDir(templatesPath, name string) (string, error) {
+	if err := ValidateSegment("template", name); err != nil {
 		return "", err
 	}
 	m, err := jig.LoadOptional(filepath.Join(templatesPath, jig.FileName))
 	if err != nil {
-		return "", fmt.Errorf("reading the base axis jig: %w", err)
+		return "", fmt.Errorf("reading the base dimension jig: %w", err)
 	}
 	if m == nil || len(m.Values) == 0 {
 		return name, nil
 	}
 	entry, ok := m.FindValue(name)
 	if !ok {
-		return "", fmt.Errorf("unknown category %q (known: %s)", name, strings.Join(m.ValueNames(), ", "))
+		return "", fmt.Errorf("unknown template %q (known: %s)", name, strings.Join(m.ValueNames(), ", "))
 	}
-	return entry.DirName(), ValidateSegment("category folder", entry.DirName())
+	return entry.DirName(), ValidateSegment("template folder", entry.DirName())
 }
 
 // TreeNode is one node in a category's full selector tree, explored without any user
@@ -745,7 +869,7 @@ func describeTreeAt(dir, name string) (*TreeNode, error) {
 }
 
 // listSubdirs lists immediate subdirectories of path, skipping dotfiles and hidden folders
-// (.git, .vscode, etc.), which are never meaningful axis/selector values.
+// (.git, .vscode, etc.), which are never meaningful dimension/selector values.
 func listSubdirs(path string) ([]string, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {

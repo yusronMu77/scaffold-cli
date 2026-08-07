@@ -116,7 +116,7 @@ func TestResolveFrameworkPath_DefaultsToName(t *testing.T) {
 	root := t.TempDir()
 	writeRootManifest(t, root, `
 name: "Scaffolding Code Root"
-frameworks:
+values:
   - name: "spring-boot"
     description: "Spring Boot"
 `)
@@ -124,9 +124,9 @@ frameworks:
 		t.Fatalf("creating framework dir: %v", err)
 	}
 
-	got, err := ResolveFrameworkPath(root, "spring-boot")
+	got, err := ResolveScaffoldPath(root, "spring-boot")
 	if err != nil {
-		t.Fatalf("ResolveFrameworkPath returned error: %v", err)
+		t.Fatalf("ResolveScaffoldPath returned error: %v", err)
 	}
 	want := filepath.Join(root, "spring-boot")
 	if got != want {
@@ -138,7 +138,7 @@ func TestResolveFrameworkPath_AliasedPath(t *testing.T) {
 	root := t.TempDir()
 	writeRootManifest(t, root, `
 name: "Scaffolding Code Root"
-frameworks:
+values:
   - name: "spring"
     description: "Spring Boot"
     path: "spring-boot"
@@ -147,9 +147,9 @@ frameworks:
 		t.Fatalf("creating framework dir: %v", err)
 	}
 
-	got, err := ResolveFrameworkPath(root, "spring")
+	got, err := ResolveScaffoldPath(root, "spring")
 	if err != nil {
-		t.Fatalf("ResolveFrameworkPath returned error: %v", err)
+		t.Fatalf("ResolveScaffoldPath returned error: %v", err)
 	}
 	want := filepath.Join(root, "spring-boot")
 	if got != want {
@@ -161,12 +161,12 @@ func TestResolveFrameworkPath_UnknownFramework(t *testing.T) {
 	root := t.TempDir()
 	writeRootManifest(t, root, `
 name: "Scaffolding Code Root"
-frameworks:
+values:
   - name: "spring-boot"
     description: "Spring Boot"
 `)
 
-	_, err := ResolveFrameworkPath(root, "does-not-exist")
+	_, err := ResolveScaffoldPath(root, "does-not-exist")
 	if err == nil {
 		t.Fatal("expected an error for an unregistered framework name, got nil")
 	}
@@ -303,12 +303,12 @@ values:
 func TestDiscoverAxes(t *testing.T) {
 	versionPath := buildFixtureTree(t)
 
-	axes, err := DiscoverAxes(versionPath)
+	axes, err := DiscoverDimensions(versionPath)
 	if err != nil {
-		t.Fatalf("DiscoverAxes returned error: %v", err)
+		t.Fatalf("DiscoverDimensions returned error: %v", err)
 	}
 
-	byName := map[string]Axis{}
+	byName := map[string]Dimension{}
 	for _, a := range axes {
 		byName[a.Name] = a
 	}
@@ -359,12 +359,12 @@ description: "Base axis describing what to generate"
 		t.Fatalf("creating patterns dir: %v", err)
 	}
 
-	axes, err := DiscoverAxes(versionPath)
+	axes, err := DiscoverDimensions(versionPath)
 	if err != nil {
-		t.Fatalf("DiscoverAxes returned error: %v", err)
+		t.Fatalf("DiscoverDimensions returned error: %v", err)
 	}
 
-	byName := map[string]Axis{}
+	byName := map[string]Dimension{}
 	for _, a := range axes {
 		byName[a.Name] = a
 	}
@@ -396,12 +396,12 @@ values:
 		t.Fatalf("creating stray dir: %v", err)
 	}
 
-	axes, err := DiscoverAxes(versionPath)
+	axes, err := DiscoverDimensions(versionPath)
 	if err != nil {
-		t.Fatalf("DiscoverAxes returned error: %v", err)
+		t.Fatalf("DiscoverDimensions returned error: %v", err)
 	}
 
-	var templatesAxis Axis
+	var templatesAxis Dimension
 	for _, a := range axes {
 		if a.Name == "templates" {
 			templatesAxis = a
@@ -428,12 +428,12 @@ required: true
 name: "Extras"
 `)
 
-	axes, err := DiscoverAxes(versionPath)
+	axes, err := DiscoverDimensions(versionPath)
 	if err != nil {
-		t.Fatalf("DiscoverAxes returned error: %v", err)
+		t.Fatalf("DiscoverDimensions returned error: %v", err)
 	}
 
-	byName := map[string]Axis{}
+	byName := map[string]Dimension{}
 	for _, a := range axes {
 		byName[a.Name] = a
 	}
@@ -454,9 +454,9 @@ func TestDiscoverAxes_RequiredFallsBackToTemplatesName(t *testing.T) {
 		t.Fatalf("creating category dir: %v", err)
 	}
 
-	axes, err := DiscoverAxes(versionPath)
+	axes, err := DiscoverDimensions(versionPath)
 	if err != nil {
-		t.Fatalf("DiscoverAxes returned error: %v", err)
+		t.Fatalf("DiscoverDimensions returned error: %v", err)
 	}
 	if len(axes) != 1 || axes[0].Name != "templates" || !axes[0].Required {
 		t.Errorf("expected a Required 'templates' axis via the name-based fallback, got %+v", axes)
@@ -490,14 +490,14 @@ name: "Patterns"
 		t.Fatalf("creating stray dir: %v", err)
 	}
 
-	axes, err := DiscoverAxes(versionPath)
+	axes, err := DiscoverDimensions(versionPath)
 	if err != nil {
-		t.Fatalf("DiscoverAxes returned error: %v", err)
+		t.Fatalf("DiscoverDimensions returned error: %v", err)
 	}
 	if len(axes) != 2 {
 		t.Fatalf("expected exactly the 2 registered axes (not the stray folder), got %d: %+v", len(axes), axes)
 	}
-	byName := map[string]Axis{}
+	byName := map[string]Dimension{}
 	for _, a := range axes {
 		byName[a.Name] = a
 	}
@@ -528,9 +528,9 @@ required: true
 		t.Fatalf("creating category dir: %v", err)
 	}
 
-	axes, err := DiscoverAxes(versionPath)
+	axes, err := DiscoverDimensions(versionPath)
 	if err != nil {
-		t.Fatalf("DiscoverAxes returned error: %v", err)
+		t.Fatalf("DiscoverDimensions returned error: %v", err)
 	}
 	if len(axes) != 1 {
 		t.Fatalf("expected exactly 1 axis, got %d: %+v", len(axes), axes)
@@ -547,15 +547,15 @@ required: true
 }
 
 func TestRequiredAxis(t *testing.T) {
-	axes := []Axis{
+	axes := []Dimension{
 		{Name: "patterns", Required: false},
 		{Name: "base", Required: true},
 		{Name: "extras", Required: false},
 	}
 
-	got, err := RequiredAxis(axes)
+	got, err := RequiredDimension(axes)
 	if err != nil {
-		t.Fatalf("RequiredAxis returned error: %v", err)
+		t.Fatalf("RequiredDimension returned error: %v", err)
 	}
 	if got.Name != "base" {
 		t.Errorf("expected the axis marked Required ('base'), got %q", got.Name)
@@ -563,12 +563,12 @@ func TestRequiredAxis(t *testing.T) {
 }
 
 func TestRequiredAxis_NoneMarkedErrors(t *testing.T) {
-	axes := []Axis{
+	axes := []Dimension{
 		{Name: "patterns", Required: false},
 		{Name: "extras", Required: false},
 	}
 
-	_, err := RequiredAxis(axes)
+	_, err := RequiredDimension(axes)
 	if err == nil {
 		t.Fatal("expected an error when no axis is marked Required, got nil")
 	}
@@ -710,7 +710,7 @@ default: "services"
 
 func TestDefaultCategory_And_ResolveCategoryDir_PathOverride(t *testing.T) {
 	// A values: entry can alias its CLI-facing name to a different on-disk folder.
-	// DefaultCategory returns the CLI-facing name; ResolveCategoryDir resolves that name to the
+	// DefaultCategory returns the CLI-facing name; ResolveTemplateDir resolves that name to the
 	// actual folder.
 	templatesPath := t.TempDir()
 	writeFixtureManifest(t, templatesPath, `
@@ -730,12 +730,12 @@ values:
 		t.Fatalf("expected DefaultCategory to return the CLI-facing name 'svc', got %q", name)
 	}
 
-	got, err := ResolveCategoryDir(templatesPath, name)
+	got, err := ResolveTemplateDir(templatesPath, name)
 	if err != nil {
-		t.Fatalf("ResolveCategoryDir returned error: %v", err)
+		t.Fatalf("ResolveTemplateDir returned error: %v", err)
 	}
 	if got != "services" {
-		t.Errorf("expected ResolveCategoryDir to resolve 'svc' to folder 'services', got %q", got)
+		t.Errorf("expected ResolveTemplateDir to resolve 'svc' to folder 'services', got %q", got)
 	}
 }
 
@@ -744,9 +744,9 @@ func TestResolveCategoryDir_NoRegistryFallsBackToNameAsIs(t *testing.T) {
 	// behavior.
 	templatesPath := t.TempDir()
 
-	got, err := ResolveCategoryDir(templatesPath, "services")
+	got, err := ResolveTemplateDir(templatesPath, "services")
 	if err != nil {
-		t.Fatalf("ResolveCategoryDir returned error: %v", err)
+		t.Fatalf("ResolveTemplateDir returned error: %v", err)
 	}
 	if got != "services" {
 		t.Errorf("expected fallback to the name as-is when there's no registry, got %q", got)
@@ -763,7 +763,7 @@ values:
   - name: "services"
 `)
 
-	_, err := ResolveCategoryDir(templatesPath, "stray")
+	_, err := ResolveTemplateDir(templatesPath, "stray")
 	if err == nil {
 		t.Fatal("expected an unregistered category to be rejected, got nil")
 	}
@@ -862,7 +862,7 @@ func TestDescribeTree_Services_TwoLevels(t *testing.T) {
 // Regression tests: each of these reproduced a deviation that previously succeeded silently.
 // ---------------------------------------------------------------------------------------------
 
-// DiscoverAxes carries the resolved `path` alias on Axis.Dir/Axis.Path, so callers don't rebuild
+// DiscoverDimensions carries the resolved `path` alias on Dimension.Dir/Dimension.Path, so callers don't rebuild
 // the path from Name and read the wrong folder.
 func TestDiscoverAxes_AxisCarriesResolvedDirAndFlag(t *testing.T) {
 	versionPath := t.TempDir()
@@ -877,14 +877,14 @@ values:
 	writeFixtureManifest(t, filepath.Join(versionPath, "tmpl"), "name: T\nrequired: true\n")
 	writeFixtureManifest(t, filepath.Join(versionPath, "patterns"), "name: P\n")
 
-	axes, err := DiscoverAxes(versionPath)
+	axes, err := DiscoverDimensions(versionPath)
 	if err != nil {
-		t.Fatalf("DiscoverAxes returned error: %v", err)
+		t.Fatalf("DiscoverDimensions returned error: %v", err)
 	}
 
-	base, err := RequiredAxis(axes)
+	base, err := RequiredDimension(axes)
 	if err != nil {
-		t.Fatalf("RequiredAxis returned error: %v", err)
+		t.Fatalf("RequiredDimension returned error: %v", err)
 	}
 	if base.Dir != "tmpl" {
 		t.Errorf("expected the required axis to carry its resolved folder 'tmpl', got %q", base.Dir)
@@ -894,7 +894,7 @@ values:
 		t.Errorf("expected Path() to apply the alias (%s), got %s", want, got)
 	}
 
-	style, ok := FindAxisByFlag(axes, "style")
+	style, ok := FindDimensionByFlag(axes, "style")
 	if !ok {
 		t.Fatal("expected the patterns axis to be findable by its declared flag --style")
 	}
@@ -910,9 +910,9 @@ func TestDiscoverAxes_FlagDefaultsToName(t *testing.T) {
 	writeFixtureManifest(t, filepath.Join(versionPath, "templates"), "name: T\nrequired: true\n")
 	writeFixtureManifest(t, filepath.Join(versionPath, "test"), "name: Test\n")
 
-	axes, err := DiscoverAxes(versionPath)
+	axes, err := DiscoverDimensions(versionPath)
 	if err != nil {
-		t.Fatalf("DiscoverAxes returned error: %v", err)
+		t.Fatalf("DiscoverDimensions returned error: %v", err)
 	}
 	for _, a := range axes {
 		if a.Flag != a.Name {
@@ -929,9 +929,9 @@ func TestDiscoverAxes_NameFallbackSuppressedByExplicitRequired(t *testing.T) {
 	writeFixtureManifest(t, filepath.Join(versionPath, "templates"), "name: T\n")
 	writeFixtureManifest(t, filepath.Join(versionPath, "base"), "name: B\nrequired: true\n")
 
-	axes, err := DiscoverAxes(versionPath)
+	axes, err := DiscoverDimensions(versionPath)
 	if err != nil {
-		t.Fatalf("DiscoverAxes returned error: %v", err)
+		t.Fatalf("DiscoverDimensions returned error: %v", err)
 	}
 
 	required := 0
@@ -943,9 +943,9 @@ func TestDiscoverAxes_NameFallbackSuppressedByExplicitRequired(t *testing.T) {
 	if required != 1 {
 		t.Fatalf("expected exactly one required axis, got %d", required)
 	}
-	base, err := RequiredAxis(axes)
+	base, err := RequiredDimension(axes)
 	if err != nil {
-		t.Fatalf("RequiredAxis returned error: %v", err)
+		t.Fatalf("RequiredDimension returned error: %v", err)
 	}
 	if base.Name != "base" {
 		t.Errorf("expected the axis that explicitly declared required:true to win, got %q", base.Name)
@@ -953,11 +953,11 @@ func TestDiscoverAxes_NameFallbackSuppressedByExplicitRequired(t *testing.T) {
 }
 
 func TestRequiredAxis_MultipleRequiredIsAnError(t *testing.T) {
-	axes := []Axis{
+	axes := []Dimension{
 		{Name: "templates", Required: true},
 		{Name: "extra", Required: true},
 	}
-	_, err := RequiredAxis(axes)
+	_, err := RequiredDimension(axes)
 	if err == nil {
 		t.Fatal("expected two required axes to be rejected, got nil")
 	}
@@ -1052,7 +1052,7 @@ func TestDiscoverAxes_MalformedRegistryIsAnErrorNotAFallback(t *testing.T) {
 		t.Fatalf("writing fixture: %v", err)
 	}
 
-	if _, err := DiscoverAxes(versionPath); err == nil {
+	if _, err := DiscoverDimensions(versionPath); err == nil {
 		t.Fatal("expected a malformed version registry to be an error, not a silent fallback to directory listing")
 	}
 }
@@ -1108,5 +1108,47 @@ func TestDescribeTree_SkipsFoldersWithoutAManifest(t *testing.T) {
 	}
 	if len(tree.Children) != 1 || tree.Children[0].Value != "web" {
 		t.Errorf("expected only 'web' as a selector value, got %+v", tree.Children)
+	}
+}
+
+// A ShapeRegistry node encountered mid-walk (bare `values:`, no `selector:`) is a nested
+// dimension checkpoint, not an error: the walk auto-continues into whichever child declares
+// itself `required: true`, and every other child becomes an optional overlay reported in
+// WalkResult.Checkpoints - the exact same required-plus-optional mechanism as the top-level
+// dimension list (DiscoverDimensions), just reachable at any depth.
+func TestWalkCategoryChain_NestedDimensionCheckpoint(t *testing.T) {
+	templatesPath := t.TempDir()
+	writeFixtureManifest(t, filepath.Join(templatesPath, "widget"), `
+name: Widget
+values:
+  - name: core
+  - name: extra-logging
+    flag: logging
+`)
+	writeFixtureManifest(t, filepath.Join(templatesPath, "widget", "core"),
+		"name: Core\nrequired: true\nfiles:\n  - path: core.txt\n")
+	writeFixtureManifest(t, filepath.Join(templatesPath, "widget", "extra-logging"),
+		"name: Extra Logging\nvalues:\n  - name: verbose\n")
+	writeFixtureManifest(t, filepath.Join(templatesPath, "widget", "extra-logging", "verbose"),
+		"name: Verbose\nfiles:\n  - path: logging.txt\n")
+
+	result, err := WalkCategoryChain([]string{templatesPath}, "widget", map[string]string{})
+	if err != nil {
+		t.Fatalf("WalkCategoryChain returned error: %v", err)
+	}
+
+	if result.Leaf == nil || result.Leaf.Name != "Core" {
+		t.Fatalf("expected the walk to auto-continue into the required child 'core', got leaf %+v", result.Leaf)
+	}
+	if len(result.Checkpoints) != 1 {
+		t.Fatalf("expected exactly one nested dimension checkpoint, got %d: %+v",
+			len(result.Checkpoints), result.Checkpoints)
+	}
+	cp := result.Checkpoints[0]
+	if len(cp.Overlays) != 1 || cp.Overlays[0].Name != "extra-logging" || cp.Overlays[0].Flag != "logging" {
+		t.Errorf("expected one optional overlay named 'extra-logging' with flag 'logging', got %+v", cp.Overlays)
+	}
+	if cp.Overlays[0].Required {
+		t.Errorf("the optional overlay must not be marked Required")
 	}
 }

@@ -1,0 +1,116 @@
+name: Release
+
+# Triggered by pushing a tag (e.g. via the GitHub web UI's "Draft a new release" -> "Choose a
+# tag" -> "Create new tag"). Builds a static binary for every OS/arch pair, packages each into an
+# archive, and attaches everything to a GitHub Release together with a checksums file.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          ext=""
+          [ "$GOOS" = "windows" ] && ext=".exe"
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X scaffold-engine-go/internal/cmd.Version=${version}" \
+            -o "dist/scaffold${ext}" .
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          name="scaffold-cli_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          mkdir -p out
+          cp README.md LICENSE dist/
+          cd dist
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -j "../out/${name}.zip" scaffold.exe README.md LICENSE
+          else
+            tar -czf "../out/${name}.tar.gz" scaffold README.md LICENSE
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: out/*
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > checksums.txt
+
+      # Notes are the commit log since the previous tag - this project's commits are written as
+      # "task(...): [Issue-#N] description", so plain `git log` already carries the issue
+      # reference, and GitHub auto-links any "#N" it finds in a release body to that issue.
+      - name: Build changelog
+        run: |
+          set -euo pipefail
+          current="${GITHUB_REF_NAME}"
+          previous=$(git describe --tags --abbrev=0 "${current}^" 2>/dev/null || true)
+          {
+            echo "## Changes"
+            if [ -n "$previous" ]; then
+              echo "$previous...$current"
+              echo ""
+              git log "${previous}..${current}" --no-merges --pretty=format:'- %s (%h)'
+            else
+              git log "${current}" --no-merges --pretty=format:'- %s (%h)'
+            fi
+          } > changelog.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body_path: changelog.md
+          generate_release_notes: true

@@ -29,7 +29,7 @@ func TestRules_DefaultSeesEngineFacts(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	web := filepath.Join(root, "fw", "1.0", "tmpl", "services", "web")
 	writeFile(t, web, "jig.yaml", readFile(t, filepath.Join(web, "jig.yaml"))+
-		"variables:\n  - name: Tag\n    default: \"{{ .Framework }}-{{ .Version }}\"\n")
+		"variables:\n  - name: Tag\n    default: \"{{ .Scaffold }}-{{ .Version }}\"\n")
 	writeFile(t, web, "out.txt", "{{ .Tag }}")
 
 	out, _, err := createInto(t, root, "fw", "services", "payment", "--function=web", "--print")

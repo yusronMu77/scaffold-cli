@@ -27,16 +27,16 @@ func IsPartial(name string) bool {
 // Reserved keys in a values file. A jig naming a selector, axis flag, or variable after one of
 // these is rejected, since the two meanings would be indistinguishable in a values file.
 const (
-	KeyFramework = "framework"
-	KeyCategory  = "category"
-	KeyName      = "name"
-	KeyData      = "data"
+	KeyScaffold = "scaffold"
+	KeyTemplate = "template"
+	KeyName     = "name"
+	KeyData     = "data"
 )
 
 // ReservedValueKeys maps each reserved values-file key to the reason it is taken.
 var ReservedValueKeys = map[string]string{
-	KeyFramework: "one of the three positional arguments",
-	KeyCategory:  "one of the three positional arguments",
-	KeyName:      "one of the three positional arguments",
-	KeyData:      "the structured `data:` block",
+	KeyScaffold: "one of the three positional arguments",
+	KeyTemplate: "one of the three positional arguments",
+	KeyName:     "one of the three positional arguments",
+	KeyData:     "the structured `data:` block",
 }

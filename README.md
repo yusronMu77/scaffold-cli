@@ -5,8 +5,8 @@ microservices using predefined templates and architectural patterns. Say goodbye
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-`scaffold-cli` is a universal, dynamically-extensible scaffolding engine. Frameworks, versions,
-axes, categories, selector values, and even the CLI flag names themselves are declared by
+`scaffold-cli` is a universal, dynamically-extensible scaffolding engine. Scaffolds, versions,
+dimensions, templates, selector values, and even the CLI flag names themselves are declared by
 templates at runtime — none of it is hardcoded in the binary. The engine only knows how to walk an
 inheritance chain and render; what gets generated comes entirely from a separate templates
 repository (see [Requirements](#requirements) below).
@@ -16,13 +16,37 @@ repository (see [Requirements](#requirements) below).
 - Go 1.26 or newer (to build from source).
 - A templates repository laid out for this engine — see
   [scaffold-templates](https://github.com/yusronMu77/scaffold-templates), the companion repo that
-  holds the actual frameworks, versions, categories, and their `jig.yaml`-driven inheritance tree.
+  holds the actual scaffolds, versions, templates, and their `jig.yaml`-driven inheritance tree.
   `scaffold-cli` itself ships with none of that content; it only knows how to read and render it.
   By default the CLI looks for a checkout of it in a folder literally named `scaffolding-code` next
   to where you run it — clone it under that name, or point elsewhere with `--scaffolding-code=<path>`
   (see [Configuration](#configuration) for every way to set that path).
 
-## Build
+## Install
+
+Every tagged release publishes prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) —
+see the [Releases page](https://github.com/yusronMu77/scaffold-cli/releases). The install scripts
+below fetch the right one for your platform, verify its checksum, and put it on your PATH.
+
+Linux / macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yusronMu77/scaffold-cli/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/yusronMu77/scaffold-cli/main/install.ps1 | iex
+```
+
+Both accept a pinned version (`SCAFFOLD_CLI_VERSION=v0.3.0` / `-Version v0.3.0`) and a custom
+install directory (`SCAFFOLD_CLI_INSTALL_DIR` / `-InstallDir`) if you'd rather not use the default.
+
+Or grab an archive directly from the [Releases page](https://github.com/yusronMu77/scaffold-cli/releases)
+and extract the `scaffold` (or `scaffold.exe`) binary yourself.
+
+## Build from source
 
 ```bash
 git clone https://github.com/yusronMu77/scaffold-cli.git
@@ -57,24 +81,24 @@ scaffolding_code: ../scaffold-templates
 
 ## Usage
 
-`scaffold-cli` has three commands: `list` to browse what's available, `create` to generate an
-artefact, and `lint` to check that a templates repository is healthy.
+`scaffold-cli` has three commands: `list` to browse what's available, `create` to generate a
+project, and `lint` to check that a templates repository is healthy.
 
 ### `list` — browse what's available
 
 ```bash
-scaffold list                          # known frameworks
-scaffold list <framework>              # versions, categories, and optional axes
-scaffold list <framework> <category>   # full selector tree and variables for that category
+scaffold list                        # known scaffolds
+scaffold list <scaffold>             # versions, templates, and optional dimensions
+scaffold list <scaffold> <template>  # full selector tree and variables for that template
 ```
 
-### `create` — generate an artefact
+### `create` — generate a project
 
 ```bash
-scaffold create <framework> <category> <name> [--flag=value ...]
+scaffold create <scaffold> <template> <name> [--flag=value ...]
 ```
 
-All three positional arguments (framework, category, name) can also come from a values file:
+All three positional arguments (scaffold, template, name) can also come from a values file:
 
 ```bash
 scaffold create -f values.yaml
@@ -95,14 +119,14 @@ Useful flags for inspecting before you write anything:
 ### `lint` — check that the templates repository is healthy
 
 ```bash
-scaffold lint [<framework>] [--build]
+scaffold lint [<scaffold>] [--build]
 ```
 
-Renders every registered combination in memory and reports anything that breaks — a value with no
-manifest, a template that fails to parse, a variable with no default, and so on. Add `--build` to
-also run each combination's own `verify:` commands against a real scratch build (slower, but the
-only way to know the generated project actually builds). Exit code is non-zero on any failure, so
-it works as a CI gate.
+Renders every registered combination in memory and reports anything that breaks — a registered
+value with no `jig.yaml`, a template that fails to parse, a variable with no default, and so on.
+Add `--build` to also run each combination's own `verify:` commands against a real scratch build
+(slower, but the only way to know the generated project actually builds). Exit code is non-zero on
+any failure, so it works as a CI gate.
 
 ## License
 

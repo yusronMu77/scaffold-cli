@@ -38,10 +38,10 @@ type Source struct {
 	Manifest *jig.Jig
 	// Label is a human-readable name used in error messages (e.g. `--style=microservice`).
 	Label string
-	// Priority orders overlays; higher applies later and therefore wins. The required base axis
-	// is always ordered first regardless of this value.
+	// Priority orders overlays; higher applies later and therefore wins. The required base
+	// dimension (which resolves <template>) is always ordered first regardless of this value.
 	Priority int
-	// Overlay marks a source that came from an optional axis (`--style=...`) rather than the
+	// Overlay marks a source that came from an optional dimension (`--style=...`) rather than the
 	// inheritance chain. It may override files but may not supply a default for another level's
 	// variable.
 	Overlay bool

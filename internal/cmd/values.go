@@ -3,22 +3,24 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
+	"scaffold-engine-go/internal/discovery"
 	"scaffold-engine-go/internal/jig"
 	"scaffold-engine-go/internal/render"
 )
 
 // Aliases for the reserved values-file keys, which live in internal/jig/reserved.go.
 const (
-	keyFramework = jig.KeyFramework
-	keyCategory  = jig.KeyCategory
-	keyName      = jig.KeyName
-	keyData      = jig.KeyData
+	keyScaffold = jig.KeyScaffold
+	keyTemplate = jig.KeyTemplate
+	keyName     = jig.KeyName
+	keyData     = jig.KeyData
 )
 
 // loadValuesFiles reads every -f file in order, returning the flat flag map and the merged `data:`
@@ -113,9 +115,9 @@ func scalarToString(v any) (string, bool) {
 }
 
 // applyValuesFile folds file-supplied values into the parsed arguments, with command-line flags
-// always winning over values-file entries. Returns the resolved positionals (framework, category,
+// always winning over values-file entries. Returns the resolved positionals (scaffold, template,
 // name), which may come from either source.
-func applyValuesFile(args *parsedArgs) (framework, category, name string, err error) {
+func applyValuesFile(args *parsedArgs) (scaffold, template, name string, err error) {
 	values, data, err := loadValuesFiles(args.valuesFiles)
 	if err != nil {
 		return "", "", "", err
@@ -130,8 +132,8 @@ func applyValuesFile(args *parsedArgs) (framework, category, name string, err er
 
 	// The three positionals may be given either way; reserved keys are marked consumed so the
 	// unknown-flag check does not complain about them.
-	args.markConsumed(keyFramework, keyCategory, keyName, keyData)
-	positional := []string{keyFramework, keyCategory, keyName}
+	args.markConsumed(keyScaffold, keyTemplate, keyName, keyData)
+	positional := []string{keyScaffold, keyTemplate, keyName}
 	resolved := make([]string, 3)
 	for i, key := range positional {
 		switch {
@@ -149,13 +151,18 @@ func applyValuesFile(args *parsedArgs) (framework, category, name string, err er
 	var missing []string
 	for i, key := range positional {
 		if resolved[i] == "" {
+			if key == keyTemplate && versionIsLeaf(args, resolved[0]) {
+				// This scaffold-version has no `templates` dimension - it is itself the template,
+				// so <template> genuinely has nothing to name.
+				continue
+			}
 			missing = append(missing, key)
 		}
 	}
 	if len(missing) > 0 {
 		hint := "pass them positionally, or set them in a values file passed with -f"
 		if len(args.valuesFiles) == 0 {
-			hint = "usage: scaffold create <framework> <category> <name> [--flag=value ...]\n" +
+			hint = "usage: scaffold create <scaffold> <template> <name> [--flag=value ...]\n" +
 				"or supply them in a values file: scaffold create -f values.yaml"
 		}
 		return "", "", "", fmt.Errorf("missing required argument(s): %s\n%s",
@@ -163,4 +170,34 @@ func applyValuesFile(args *parsedArgs) (framework, category, name string, err er
 	}
 
 	return resolved[0], resolved[1], resolved[2], nil
+}
+
+// versionIsLeaf reports whether the scaffold-version this invocation would resolve to has no
+// `templates` dimension anywhere in its chain and is therefore itself the template - the one case
+// where <template> is not required. Best-effort: any failure just means <template> stays required,
+// and the real problem (unknown scaffold, unknown version, ...) surfaces the normal way once
+// resolution actually runs.
+func versionIsLeaf(args *parsedArgs, scaffold string) bool {
+	if scaffold == "" {
+		return false
+	}
+	root := resolveScaffoldingCodeRoot(args.value("scaffolding-code"))
+	scaffoldPath, err := discovery.ResolveScaffoldPath(root, scaffold)
+	if err != nil {
+		return false
+	}
+	versionFlag, err := discovery.VersionSelectorFlag(scaffoldPath)
+	if err != nil {
+		return false
+	}
+	versionChain, err := discovery.ResolveVersionChain(scaffoldPath, args.value(versionFlag))
+	if err != nil {
+		return false
+	}
+	versionPaths := make([]string, 0, len(versionChain))
+	for _, v := range versionChain {
+		versionPaths = append(versionPaths, filepath.Join(scaffoldPath, v))
+	}
+	structure, err := discovery.ResolveVersionStructure(versionPaths)
+	return err == nil && structure.Leaf != nil
 }

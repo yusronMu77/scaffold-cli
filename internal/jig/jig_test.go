@@ -126,7 +126,7 @@ func TestLoadRoot(t *testing.T) {
 	path := writeJig(t, dir, FileName, `
 name: "Scaffolding Code Root"
 description: "Registry of supported technologies"
-frameworks:
+values:
   - name: "spring-boot"
     description: "Spring Boot (Java/Maven)"
 `)
@@ -135,11 +135,11 @@ frameworks:
 	if err != nil {
 		t.Fatalf("LoadRoot returned error: %v", err)
 	}
-	if len(root.Frameworks) != 1 {
-		t.Fatalf("expected 1 registered framework, got %d: %+v", len(root.Frameworks), root.Frameworks)
+	if len(root.Values) != 1 {
+		t.Fatalf("expected 1 registered scaffold, got %d: %+v", len(root.Values), root.Values)
 	}
-	if root.Frameworks[0].Name != "spring-boot" {
-		t.Errorf("expected framework name 'spring-boot', got %q", root.Frameworks[0].Name)
+	if root.Values[0].Name != "spring-boot" {
+		t.Errorf("expected scaffold name 'spring-boot', got %q", root.Values[0].Name)
 	}
 }
 
@@ -397,6 +397,6 @@ func TestLoadRoot_RejectsEmptyRegistry(t *testing.T) {
 		t.Fatalf("writing fixture: %v", err)
 	}
 	if _, err := LoadRoot(path); err == nil {
-		t.Fatal("expected a root jig with no frameworks to be rejected (the registry is mandatory)")
+		t.Fatal("expected a root jig with no scaffolds to be rejected (the registry is mandatory)")
 	}
 }
