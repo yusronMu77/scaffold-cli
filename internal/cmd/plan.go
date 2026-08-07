@@ -60,36 +60,47 @@ func resolvePlan(args *parsedArgs, root, scaffold, template, name string) (*plan
 		versionPaths = append(versionPaths, filepath.Join(scaffoldPath, v))
 	}
 
-	// Structure - which dimensions exist - is read from the most derived version that declares
-	// any. A version existing only to override files declares none, and inherits the shape from
-	// its base.
-	structurePath, dimensions, err := discoverDimensionsInChain(versionPaths)
+	// Structure - which dimensions exist, or whether this version has none and is itself the
+	// template - is read from the most derived version that declares any. A version existing only
+	// to override files declares none, and inherits the shape from its base.
+	structure, err := discovery.ResolveVersionStructure(versionPaths)
 	if err != nil {
-		return nil, fmt.Errorf("discovering dimensions for %s %s: %w", scaffold, version, err)
-	}
-	baseDimension, err := discovery.RequiredDimension(dimensions)
-	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", scaffold, version, err)
-	}
-	templatesPath := baseDimension.Path(structurePath)
-
-	// Below the base dimension, structure is resolved per node rather than per version: a derived
-	// version can override one leaf without owning any of the directories above it.
-	templatesPaths := make([]string, 0, len(versionPaths))
-	for _, vp := range versionPaths {
-		templatesPaths = append(templatesPaths, baseDimension.Path(vp))
+		return nil, fmt.Errorf("discovering structure for %s %s: %w", scaffold, version, err)
 	}
 
-	templateDir, err := discovery.ResolveTemplateDir(templatesPath, template)
-	if err != nil {
-		return nil, err
-	}
-	walk, err := discovery.WalkCategoryChain(templatesPaths, templateDir, args.flags)
-	if err != nil {
-		return nil, err
-	}
-	for _, step := range walk.Steps {
-		args.markConsumed(step.Flag)
+	var dimensions []discovery.Dimension
+	var templatesPaths []string
+	var walk *discovery.WalkResult
+
+	if structure.Leaf != nil {
+		// No `templates` dimension anywhere in the chain - <template> plays no part here.
+		walk = &discovery.WalkResult{Leaf: structure.Leaf, LeafDir: structure.LeafPath}
+	} else {
+		dimensions = structure.Dimensions
+		baseDimension, err := discovery.RequiredDimension(dimensions)
+		if err != nil {
+			return nil, fmt.Errorf("%s %s: %w", scaffold, version, err)
+		}
+		templatesPath := baseDimension.Path(structure.StructurePath)
+
+		// Below the base dimension, structure is resolved per node rather than per version: a
+		// derived version can override one leaf without owning any of the directories above it.
+		templatesPaths = make([]string, 0, len(versionPaths))
+		for _, vp := range versionPaths {
+			templatesPaths = append(templatesPaths, baseDimension.Path(vp))
+		}
+
+		templateDir, err := discovery.ResolveTemplateDir(templatesPath, template)
+		if err != nil {
+			return nil, err
+		}
+		walk, err = discovery.WalkCategoryChain(templatesPaths, templateDir, args.flags)
+		if err != nil {
+			return nil, err
+		}
+		for _, step := range walk.Steps {
+			args.markConsumed(step.Flag)
+		}
 	}
 
 	// Sources in application order: scaffold, version, base dimension, then the template chain,
@@ -139,7 +150,7 @@ func resolvePlan(args *parsedArgs, root, scaffold, template, name string) (*plan
 		}
 	}
 
-	overlays, selectedOverlays, err := resolveOverlays(args, dimensions, structurePath)
+	overlays, selectedOverlays, err := resolveOverlays(args, dimensions, structure.StructurePath)
 	if err != nil {
 		return nil, err
 	}
@@ -212,39 +223,6 @@ func resolvePlan(args *parsedArgs, root, scaffold, template, name string) (*plan
 		return nil, err
 	}
 	return p, nil
-}
-
-// discoverDimensionsInChain finds the dimension structure, searching the version chain from most
-// derived to base and returning the first version that declares a usable one. A version that
-// exists only to override a handful of files declares no dimensions, so falling back to its base
-// is what makes `inherits:` mean what it says.
-func discoverDimensionsInChain(versionPaths []string) (string, []discovery.Dimension, error) {
-	var lastErr error
-	for i := len(versionPaths) - 1; i >= 0; i-- {
-		vp := versionPaths[i]
-		dimensions, err := discovery.DiscoverDimensions(vp)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		base, err := discovery.RequiredDimension(dimensions)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		// The dimension folder existing is not enough - it must declare itself via a manifest, or
-		// a version that merely has the directory on the way to an overridden file would be
-		// mistaken for one that defines the structure.
-		if _, statErr := os.Stat(filepath.Join(base.Path(vp), jig.FileName)); statErr != nil {
-			lastErr = fmt.Errorf("dimension %q under %s has no %s", base.Name, vp, jig.FileName)
-			continue
-		}
-		return vp, dimensions, nil
-	}
-	if lastErr != nil {
-		return "", nil, lastErr
-	}
-	return "", nil, fmt.Errorf("no version in the chain declares any dimension")
 }
 
 // renderPlan turns a resolved plan into the final file tree, plus a per-path record of who

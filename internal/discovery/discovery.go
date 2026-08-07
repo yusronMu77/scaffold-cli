@@ -375,6 +375,63 @@ func listDimensionEntries(versionPath string) ([]jig.Entry, error) {
 	return entries, nil
 }
 
+// VersionStructure is what a resolved version chain turns out to be: a container with a
+// `templates` dimension for <template> to walk (Dimensions/StructurePath), or - when no version
+// in the chain declares one - the version itself acting as the leaf template (Leaf/LeafPath).
+type VersionStructure struct {
+	Dimensions    []Dimension
+	StructurePath string
+
+	Leaf     *jig.Jig
+	LeafPath string
+}
+
+// ResolveVersionStructure walks the chain from most-derived to base looking for a version that
+// declares a usable `templates` dimension, same order and fallback as version inheritance always
+// uses. Only if none do, it checks whether the most-derived version's own jig.yaml is a leaf on
+// its own; this order keeps an ordinary version like "2.7.x", whose own jig.yaml only overrides a
+// couple of variables, correctly reading as a container once its base's dimension is found.
+func ResolveVersionStructure(versionPaths []string) (VersionStructure, error) {
+	var lastErr error
+	for i := len(versionPaths) - 1; i >= 0; i-- {
+		vp := versionPaths[i]
+		dimensions, err := DiscoverDimensions(vp)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		base, err := RequiredDimension(dimensions)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		// The dimension folder existing is not enough - it must declare itself via a manifest, or a
+		// version that merely has the directory on the way to an overridden file would be mistaken
+		// for one that defines the structure.
+		if _, statErr := os.Stat(filepath.Join(base.Path(vp), jig.FileName)); statErr != nil {
+			lastErr = fmt.Errorf("dimension %q under %s has no %s", base.Name, vp, jig.FileName)
+			continue
+		}
+		return VersionStructure{Dimensions: dimensions, StructurePath: vp}, nil
+	}
+
+	// No version in the chain declares a `templates` dimension. The most-derived version may still
+	// be usable on its own, the same fallback Shape() gives any leaf node.
+	leafPath := versionPaths[len(versionPaths)-1]
+	m, err := jig.LoadOptional(filepath.Join(leafPath, jig.FileName))
+	if err != nil {
+		return VersionStructure{}, err
+	}
+	if m != nil && m.Shape() == jig.ShapeLeaf {
+		return VersionStructure{Leaf: m, LeafPath: leafPath}, nil
+	}
+
+	if lastErr != nil {
+		return VersionStructure{}, lastErr
+	}
+	return VersionStructure{}, fmt.Errorf("no version in the chain declares any dimension or leaf template")
+}
+
 // RequiredDimension returns the one Dimension marked Required from an already-discovered list -
 // the dimension whose values are the templates selectable via `scaffold create <scaffold>
 // <template> <name>`. More than one required dimension is a configuration error.

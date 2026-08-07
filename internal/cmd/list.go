@@ -89,17 +89,21 @@ func runList(cmd *cobra.Command, rawArgs []string) error {
 		if err := args.requireAllFlagsConsumed([]string{versionFlag, "scaffolding-code"}); err != nil {
 			return err
 		}
-		return listScaffoldDetail(out, scaffold, scaffoldPath, version, versionPath)
+		return listScaffoldDetail(out, args, scaffold, scaffoldPath, version, versionPath)
 	}
 
 	// With a template given, selector flags narrow which leaf's variables to show; which ones are
 	// valid is only known after resolving the chain, so the unknown-flag check happens further down.
 
-	dimensions, err := discovery.DiscoverDimensions(versionPath)
+	structure, err := discovery.ResolveVersionStructure([]string{versionPath})
 	if err != nil {
-		return fmt.Errorf("discovering dimensions for %s %s: %w", scaffold, version, err)
+		return fmt.Errorf("discovering structure for %s %s: %w", scaffold, version, err)
 	}
-	baseDimension, err := discovery.RequiredDimension(dimensions)
+	if structure.Leaf != nil {
+		return fmt.Errorf("%s %s has no templates dimension - it is itself the template, "+
+			"so <template> must be omitted (run `scaffold list %s`)", scaffold, version, scaffold)
+	}
+	baseDimension, err := discovery.RequiredDimension(structure.Dimensions)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", scaffold, version, err)
 	}
@@ -147,7 +151,11 @@ func printVariables(out io.Writer, args *parsedArgs, root, scaffold, template st
 		return nil
 	}
 
-	fmt.Fprintf(out, "\nVariables for %s", template)
+	if template != "" {
+		fmt.Fprintf(out, "\nVariables for %s", template)
+	} else {
+		fmt.Fprint(out, "\nVariables")
+	}
 	if len(p.Walk.Steps) > 0 {
 		for _, s := range p.Walk.Steps {
 			fmt.Fprintf(out, " --%s=%s", s.Flag, s.Value)
@@ -193,7 +201,7 @@ func listScaffolds(out io.Writer, root string) error {
 
 // listScaffoldDetail prints versions, then the templates of the required base dimension, then the
 // optional overlays.
-func listScaffoldDetail(out io.Writer, scaffold, scaffoldPath, version, versionPath string) error {
+func listScaffoldDetail(out io.Writer, args *parsedArgs, scaffold, scaffoldPath, version, versionPath string) error {
 	fmt.Fprintf(out, "%s:\n", scaffold)
 
 	fmt.Fprintln(out, "  versions:")
@@ -216,10 +224,18 @@ func listScaffoldDetail(out io.Writer, scaffold, scaffoldPath, version, versionP
 	}
 	fmt.Fprintf(out, "  resolved version: %s\n", version)
 
-	dimensions, err := discovery.DiscoverDimensions(versionPath)
+	structure, err := discovery.ResolveVersionStructure([]string{versionPath})
 	if err != nil {
 		return err
 	}
+	if structure.Leaf != nil {
+		fmt.Fprintln(out, "  no templates dimension - this version is itself the template; "+
+			"omit <template> (variables shown below)")
+		return printVariables(out, &parsedArgs{flags: args.flags, consumed: map[string]bool{}},
+			filepath.Dir(scaffoldPath), scaffold, "")
+	}
+
+	dimensions := structure.Dimensions
 	baseDimension, err := discovery.RequiredDimension(dimensions)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", scaffold, version, err)

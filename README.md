@@ -22,7 +22,31 @@ repository (see [Requirements](#requirements) below).
   to where you run it — clone it under that name, or point elsewhere with `--scaffolding-code=<path>`
   (see [Configuration](#configuration) for every way to set that path).
 
-## Build
+## Install
+
+Every tagged release publishes prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) —
+see the [Releases page](https://github.com/yusronMu77/scaffold-cli/releases). The install scripts
+below fetch the right one for your platform, verify its checksum, and put it on your PATH.
+
+Linux / macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yusronMu77/scaffold-cli/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/yusronMu77/scaffold-cli/main/install.ps1 | iex
+```
+
+Both accept a pinned version (`SCAFFOLD_CLI_VERSION=v0.3.0` / `-Version v0.3.0`) and a custom
+install directory (`SCAFFOLD_CLI_INSTALL_DIR` / `-InstallDir`) if you'd rather not use the default.
+
+Or grab an archive directly from the [Releases page](https://github.com/yusronMu77/scaffold-cli/releases)
+and extract the `scaffold` (or `scaffold.exe`) binary yourself.
+
+## Build from source
 
 ```bash
 git clone https://github.com/yusronMu77/scaffold-cli.git

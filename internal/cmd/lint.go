@@ -230,20 +230,22 @@ func enumerateVersion(root, scaffoldPath, scaffold, version string) ([]lintCase,
 	for _, v := range chain {
 		versionPaths = append(versionPaths, filepath.Join(scaffoldPath, v))
 	}
-	versionPath, _, err := discoverDimensionsInChain(versionPaths)
+	structure, err := discovery.ResolveVersionStructure(versionPaths)
 	if err != nil {
 		return nil, err
+	}
+	if structure.Leaf != nil {
+		// No `templates` dimension anywhere in the chain - the version itself is the one and only
+		// case to try, the same as any other leaf template.
+		return []lintCase{{scaffold: scaffold, version: version}}, nil
 	}
 
-	dimensions, err := discovery.DiscoverDimensions(versionPath)
-	if err != nil {
-		return nil, err
-	}
+	dimensions := structure.Dimensions
 	baseDimension, err := discovery.RequiredDimension(dimensions)
 	if err != nil {
 		return nil, err
 	}
-	templatesPath := baseDimension.Path(versionPath)
+	templatesPath := baseDimension.Path(structure.StructurePath)
 
 	var cases []lintCase
 	for _, template := range baseDimension.Values {

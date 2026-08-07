@@ -10,8 +10,9 @@ import (
 const defaultScaffoldingCodeRoot = "./scaffolding-code"
 
 // Version is the engine version, reported by `scaffold --version`, so a binary can be matched
-// against the scaffolding-code it reads since the two are distributed separately.
-const Version = "0.2.0-dev"
+// against the scaffolding-code it reads since the two are distributed separately. Release builds
+// overwrite this via -ldflags "-X ...Version=..."; a source build keeps the dev default.
+var Version = "0.2.0-dev"
 
 // Execute builds and runs the cobra command tree.
 func Execute() error {

@@ -3,12 +3,14 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
+	"scaffold-engine-go/internal/discovery"
 	"scaffold-engine-go/internal/jig"
 	"scaffold-engine-go/internal/render"
 )
@@ -149,6 +151,11 @@ func applyValuesFile(args *parsedArgs) (scaffold, template, name string, err err
 	var missing []string
 	for i, key := range positional {
 		if resolved[i] == "" {
+			if key == keyTemplate && versionIsLeaf(args, resolved[0]) {
+				// This scaffold-version has no `templates` dimension - it is itself the template,
+				// so <template> genuinely has nothing to name.
+				continue
+			}
 			missing = append(missing, key)
 		}
 	}
@@ -163,4 +170,34 @@ func applyValuesFile(args *parsedArgs) (scaffold, template, name string, err err
 	}
 
 	return resolved[0], resolved[1], resolved[2], nil
+}
+
+// versionIsLeaf reports whether the scaffold-version this invocation would resolve to has no
+// `templates` dimension anywhere in its chain and is therefore itself the template - the one case
+// where <template> is not required. Best-effort: any failure just means <template> stays required,
+// and the real problem (unknown scaffold, unknown version, ...) surfaces the normal way once
+// resolution actually runs.
+func versionIsLeaf(args *parsedArgs, scaffold string) bool {
+	if scaffold == "" {
+		return false
+	}
+	root := resolveScaffoldingCodeRoot(args.value("scaffolding-code"))
+	scaffoldPath, err := discovery.ResolveScaffoldPath(root, scaffold)
+	if err != nil {
+		return false
+	}
+	versionFlag, err := discovery.VersionSelectorFlag(scaffoldPath)
+	if err != nil {
+		return false
+	}
+	versionChain, err := discovery.ResolveVersionChain(scaffoldPath, args.value(versionFlag))
+	if err != nil {
+		return false
+	}
+	versionPaths := make([]string, 0, len(versionChain))
+	for _, v := range versionChain {
+		versionPaths = append(versionPaths, filepath.Join(scaffoldPath, v))
+	}
+	structure, err := discovery.ResolveVersionStructure(versionPaths)
+	return err == nil && structure.Leaf != nil
 }
