@@ -11,6 +11,8 @@ templates at runtime — none of it is hardcoded in the binary. The engine only 
 inheritance chain and render; what gets generated comes entirely from a separate templates
 repository (see [Requirements](#requirements) below).
 
+![scaffold-cli demo: list, drill into a version, dry-run a create, then lint the whole templates repo](docs/demo.gif)
+
 ## Requirements
 
 - Go 1.26 or newer (to build from source).
@@ -91,6 +93,17 @@ scaffold list                        # known scaffolds
 scaffold list <scaffold>             # versions, templates, and optional dimensions
 scaffold list <scaffold> <template>  # full selector tree and variables for that template
 ```
+
+`<template>` picks a value from the required dimension of the *resolved* version — it's not how
+you pick the version itself. To browse a specific version, use its selector flag (`--scaffold-version`
+by default, whatever the scaffold's `jig.yaml` names it as):
+
+```bash
+scaffold list spring-boot --scaffold-version=hello-world
+```
+
+If that version has no `templates/` dimension — it's a leaf, like `hello-world` above — `list`
+prints its variables directly instead of asking for a `<template>`.
 
 ### `create` — generate a project
 
