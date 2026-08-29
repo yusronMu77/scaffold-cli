@@ -13,6 +13,24 @@ repository (see [Requirements](#requirements) below).
 
 ![scaffold-cli demo: list, drill into a version, dry-run a create, then lint the whole templates repo](docs/demo.gif)
 
+## Features
+
+- **Nothing hardcoded.** Scaffolds, versions, dimensions, templates, selector values, and even CLI
+  flag names are declared entirely in the templates repository (`jig.yaml`), not the binary —
+  point `scaffold` at a different templates repo and it drives a completely different toolchain.
+- **One inheritance chain, one precedence rule.** `scaffold → version → dimension → template →
+  overlay`, later always wins — so a version can override a single file without duplicating
+  everything else it doesn't change.
+- **Inspect before you write anything.** `--dry-run` (which files would be produced), `--print`
+  (what's actually in them), and `--explain` (which level of the chain contributed each file) all
+  run the full resolution with nothing touching disk.
+- **Values files, not just flags.** `-f values.yaml` supplies the scaffold/template/name and every
+  variable in one file; `-f` may repeat (later wins), and a command-line flag always beats a file.
+- **`lint --build` proves the output actually works,** not just that templates parse — it runs
+  each combination's own `verify:` command (e.g. `mvn test`) against a real scratch build and
+  exits non-zero on any failure, so it doubles as a CI gate for the templates repo.
+- Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) on every tagged release.
+
 ## Requirements
 
 - Go 1.26 or newer (to build from source).
@@ -25,6 +43,8 @@ repository (see [Requirements](#requirements) below).
   (see [Configuration](#configuration) for every way to set that path).
 
 ## Install
+
+![Quick install: the real install.sh downloading v0.1.0, verifying its checksum, and running](docs/quick-install.gif)
 
 Every tagged release publishes prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) —
 see the [Releases page](https://github.com/yusronMu77/scaffold-cli/releases). The install scripts
@@ -140,6 +160,14 @@ value with no `jig.yaml`, a template that fails to parse, a variable with no def
 Add `--build` to also run each combination's own `verify:` commands against a real scratch build
 (slower, but the only way to know the generated project actually builds). Exit code is non-zero on
 any failure, so it works as a CI gate.
+
+## Creating a template
+
+Every scaffold, version, dimension, template, and variable lives in the templates repository, not
+this engine — see [Requirements](#requirements). Adding or changing one means writing a
+`jig.yaml`; the full contract for that file (reserved names, the precedence rule, a minimal
+worked example) is documented in
+[scaffold-templates' README](https://github.com/yusronMu77/scaffold-templates#readme).
 
 ## License
 
