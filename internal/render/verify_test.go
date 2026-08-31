@@ -1,6 +1,8 @@
 package render
 
 import (
+	"errors"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -111,5 +113,38 @@ func TestVerify_NoneDeclaredIsEmptyNotAnError(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("expected no checks, got %+v", got)
+	}
+}
+
+// A verify command that exits non-zero must be correctly collected and produce an exit error when executed,
+// so lint --build can detect and propagate the failure.
+func TestVerify_NonZeroExit(t *testing.T) {
+	sources := []Source{
+		sourceWith(t, "fw", "verify:\n  - name: failing-check\n    command: [go, help, not-a-real-topic]\n"),
+	}
+
+	got, err := CollectVerifications(sources, Context{})
+	if err != nil {
+		t.Fatalf("CollectVerifications: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 check, got %d: %+v", len(got), got)
+	}
+	v := got[0]
+	if v.Name != "failing-check" {
+		t.Errorf("expected check name 'failing-check', got %q", v.Name)
+	}
+	if v.String() != "go help not-a-real-topic" {
+		t.Errorf("expected string representation 'go help not-a-real-topic', got %q", v.String())
+	}
+
+	cmd := exec.Command(v.Command[0], v.Command[1:]...)
+	err = cmd.Run()
+	if err == nil {
+		t.Fatalf("expected command %v to exit non-zero and return an error", v.Command)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("expected exit error from non-zero exit code, got %v", err)
 	}
 }
