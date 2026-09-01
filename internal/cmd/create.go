@@ -88,7 +88,7 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 		return err
 	}
 
-	files, contributions, err := renderPlan(p)
+	files, inserts, contributions, err := renderPlan(p)
 	if err != nil {
 		return err
 	}
@@ -102,14 +102,17 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 
 	if args.value("print") == "true" {
 		printRendered(out, files)
+		printInserts(out, inserts)
 		return nil
 	}
 	if args.value("explain") == "true" {
 		printExplain(out, files, contributions, p, targetDir)
+		printInserts(out, inserts)
 		return nil
 	}
 	if args.value("dry-run") == "true" {
 		printPlan(out, files, targetDir, p)
+		printInserts(out, inserts)
 		return nil
 	}
 
@@ -131,6 +134,25 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 		fmt.Fprintf(out, "  %s\n", p)
 	}
 	fmt.Fprintf(out, "\n%d file(s) written.\n", len(written))
+
+	if len(inserts) > 0 {
+		applied, skipped, err := render.ApplyInserts(targetDir, inserts)
+		if err != nil {
+			return err
+		}
+		if len(applied) > 0 {
+			fmt.Fprintf(out, "\nSpliced into %d existing file(s):\n", len(applied))
+			for _, p := range applied {
+				fmt.Fprintf(out, "  %s\n", p)
+			}
+		}
+		if len(skipped) > 0 {
+			fmt.Fprintf(out, "\n%d insert(s) already present, skipped:\n", len(skipped))
+			for _, p := range skipped {
+				fmt.Fprintf(out, "  %s\n", p)
+			}
+		}
+	}
 	return nil
 }
 
@@ -348,6 +370,23 @@ func printRendered(out io.Writer, files []render.File) {
 			fmt.Fprintln(out)
 		}
 		fmt.Fprintln(out)
+	}
+}
+
+// printInserts reports every pending anchor-based splice for the inspection modes (--print,
+// --dry-run, --explain) - none of which touch disk, so this only ever describes what create
+// would do, matching printRendered/printPlan/printExplain's "nothing written" contract.
+func printInserts(out io.Writer, inserts []render.Insert) {
+	if len(inserts) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "\nWould splice %d insert(s) into existing files:\n", len(inserts))
+	for _, ins := range inserts {
+		direction := "after"
+		if !ins.After {
+			direction = "before"
+		}
+		fmt.Fprintf(out, "  %s  insert_%s %q  (from %s)\n", ins.Path, direction, ins.Anchor, ins.Source)
 	}
 }
 

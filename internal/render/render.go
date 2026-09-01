@@ -32,6 +32,19 @@ type File struct {
 	Merge bool
 }
 
+// Insert is one anchor-based splice: Content is already rendered against the template context,
+// same as a normal File, but it is spliced into an existing file at Path rather than written as
+// one. Multiple Inserts may target the same Path - each applies independently, in source order,
+// unlike File/Merge which dedupe by path.
+type Insert struct {
+	Path    string
+	Content []byte
+	Anchor  string
+	Regex   bool
+	After   bool // false means InsertBefore
+	Source  string
+}
+
 // Source is one folder contributing files, paired with the jig that governs it.
 type Source struct {
 	Dir      string
@@ -107,8 +120,10 @@ func applyLayout(rel string, rules []ResolvedLayout) string {
 // contents are the source of truth: files are rendered by default, and `files:` in the jig only
 // overrides specific ones. Placeholders are substituted in both file contents and path names. A
 // subdirectory with its own jig.yaml is skipped, since that makes it a discovery node rather than
-// template content.
-func RenderSource(src Source, ctx Context) ([]File, error) {
+// template content. An entry declaring `insert_after`/`insert_before` produces an Insert instead
+// of a File - its rendered content is a snippet to splice into an already-existing target file,
+// not a file of its own.
+func RenderSource(src Source, ctx Context) ([]File, []Insert, error) {
 	overrides := indexOverrides(src.Manifest)
 	mergePaths := map[string]bool{}
 	if src.Manifest != nil {
@@ -119,6 +134,7 @@ func RenderSource(src Source, ctx Context) ([]File, error) {
 	used := map[string]bool{}
 
 	var out []File
+	var inserts []Insert
 	err := filepath.WalkDir(src.Dir, func(abs string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -189,6 +205,16 @@ func RenderSource(src Source, ctx Context) ([]File, error) {
 			content = []byte(rendered)
 		}
 
+		if hasOverride {
+			if anchor, after, ok := entry.Anchor(); ok {
+				inserts = append(inserts, Insert{
+					Path: outRel, Content: content, Anchor: anchor, Regex: entry.AnchorRegex,
+					After: after, Source: src.Label,
+				})
+				return nil
+			}
+		}
+
 		info, err := d.Info()
 		mode := fs.FileMode(0o644)
 		if err == nil {
@@ -205,18 +231,18 @@ func RenderSource(src Source, ctx Context) ([]File, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// An override pointing at a file that isn't there is a template-authoring bug; silently
 	// ignoring it would hide a typo in a path.
 	for p := range overrides {
 		if !used[p] {
-			return nil, fmt.Errorf("%s: jig `files:` lists %q, but no such file exists in %s",
+			return nil, nil, fmt.Errorf("%s: jig `files:` lists %q, but no such file exists in %s",
 				src.Label, p, src.Dir)
 		}
 	}
-	return out, nil
+	return out, inserts, nil
 }
 
 func indexOverrides(m *jig.Jig) map[string]jig.FileEntry {

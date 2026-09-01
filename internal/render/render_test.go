@@ -281,7 +281,7 @@ func TestRenderSource_RendersContentAndPathsAndSkipsJig(t *testing.T) {
 	writeFile(t, dir, jig.FileName, "name: leaf\n")
 	writeFile(t, dir, "src/{{ .PackagePath }}/App.java", "package {{ .PackageName }};\n")
 
-	files, err := RenderSource(Source{Dir: dir, Manifest: &jig.Jig{}, Label: "leaf"},
+	files, _, err := RenderSource(Source{Dir: dir, Manifest: &jig.Jig{}, Label: "leaf"},
 		Context{"PackagePath": "com/acme", "PackageName": "com.acme"})
 	if err != nil {
 		t.Fatalf("RenderSource: %v", err)
@@ -305,7 +305,7 @@ func TestRenderSource_SkipsNestedDiscoveryNodes(t *testing.T) {
 	writeFile(t, dir, "child/"+jig.FileName, "name: child\n")
 	writeFile(t, dir, "child/owned.txt", "belongs to child\n")
 
-	files, err := RenderSource(Source{Dir: dir, Manifest: &jig.Jig{}, Label: "parent"}, Context{})
+	files, _, err := RenderSource(Source{Dir: dir, Manifest: &jig.Jig{}, Label: "parent"}, Context{})
 	if err != nil {
 		t.Fatalf("RenderSource: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestRenderSource_FileOverrides(t *testing.T) {
 		{Path: "Dockerfile", Condition: "WithDocker"},
 	}}
 
-	files, err := RenderSource(Source{Dir: dir, Manifest: m, Label: "leaf"}, Context{"WithDocker": "false"})
+	files, _, err := RenderSource(Source{Dir: dir, Manifest: m, Label: "leaf"}, Context{"WithDocker": "false"})
 	if err != nil {
 		t.Fatalf("RenderSource: %v", err)
 	}
@@ -342,12 +342,43 @@ func TestRenderSource_FileOverrides(t *testing.T) {
 		t.Error("rename must change the output name")
 	}
 
-	files, err = RenderSource(Source{Dir: dir, Manifest: m, Label: "leaf"}, Context{"WithDocker": "true"})
+	files, _, err = RenderSource(Source{Dir: dir, Manifest: m, Label: "leaf"}, Context{"WithDocker": "true"})
 	if err != nil {
 		t.Fatalf("RenderSource: %v", err)
 	}
 	if len(files) != 3 {
 		t.Errorf("expected the conditional file when its variable is truthy, got %v", pathsOf(files))
+	}
+}
+
+// An entry declaring insert_after produces an Insert, not a File - it's a snippet to splice into
+// an existing file, not output of its own.
+func TestRenderSource_InsertEntryProducesInsertNotFile(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, jig.FileName, "name: leaf\n")
+	writeFile(t, dir, "route.snippet", "{{ .RouteName }}();\n")
+
+	m := &jig.Jig{Files: []jig.FileEntry{
+		{Path: "route.snippet", Target: "Controller.java", InsertAfter: "// @scaffold:routes"},
+	}}
+
+	files, inserts, err := RenderSource(Source{Dir: dir, Manifest: m, Label: "leaf"},
+		Context{"RouteName": "newRoute"})
+	if err != nil {
+		t.Fatalf("RenderSource: %v", err)
+	}
+	if len(files) != 0 {
+		t.Errorf("expected the insert entry to produce no File, got %v", pathsOf(files))
+	}
+	if len(inserts) != 1 {
+		t.Fatalf("expected exactly one Insert, got %+v", inserts)
+	}
+	ins := inserts[0]
+	if ins.Path != "Controller.java" || ins.Anchor != "// @scaffold:routes" || !ins.After {
+		t.Errorf("unexpected insert %+v", ins)
+	}
+	if string(ins.Content) != "newRoute();\n" {
+		t.Errorf("expected the snippet to be rendered against the context, got %q", ins.Content)
 	}
 }
 
@@ -358,7 +389,7 @@ func TestRenderSource_RejectsOverrideForMissingFile(t *testing.T) {
 	writeFile(t, dir, jig.FileName, "name: leaf\n")
 	m := &jig.Jig{Files: []jig.FileEntry{{Path: "not-there.txt"}}}
 
-	_, err := RenderSource(Source{Dir: dir, Manifest: m, Label: "leaf"}, Context{})
+	_, _, err := RenderSource(Source{Dir: dir, Manifest: m, Label: "leaf"}, Context{})
 	if err == nil || !strings.Contains(err.Error(), "not-there.txt") {
 		t.Fatalf("expected an error naming the missing file, got: %v", err)
 	}
@@ -370,7 +401,7 @@ func TestRenderSource_UnknownVariableIsAnError(t *testing.T) {
 	writeFile(t, dir, jig.FileName, "name: leaf\n")
 	writeFile(t, dir, "a.txt", "{{ .Typoed }}\n")
 
-	_, err := RenderSource(Source{Dir: dir, Manifest: &jig.Jig{}, Label: "leaf"}, Context{})
+	_, _, err := RenderSource(Source{Dir: dir, Manifest: &jig.Jig{}, Label: "leaf"}, Context{})
 	if err == nil {
 		t.Fatal("expected an unknown placeholder to fail the render, got nil")
 	}
@@ -383,7 +414,7 @@ func TestRenderSource_RejectsEscapingOutputPath(t *testing.T) {
 	writeFile(t, dir, "a.txt", "x\n")
 	m := &jig.Jig{Files: []jig.FileEntry{{Path: "a.txt", Target: "../../escaped.txt"}}}
 
-	_, err := RenderSource(Source{Dir: dir, Manifest: m, Label: "leaf"}, Context{})
+	_, _, err := RenderSource(Source{Dir: dir, Manifest: m, Label: "leaf"}, Context{})
 	if err == nil || !strings.Contains(err.Error(), "escapes") {
 		t.Fatalf("expected an escape to be rejected, got: %v", err)
 	}
@@ -455,7 +486,7 @@ func TestLayout_RewritesPrefixWithNoJigEntries(t *testing.T) {
 		t.Fatalf("CollectLayout: %v", err)
 	}
 
-	files, err := RenderSource(
+	files, _, err := RenderSource(
 		Source{Dir: dir, Manifest: &jig.Jig{}, Label: "leaf", Layout: rules},
 		Context{"PackagePath": "com/acme", "PackageName": "com.acme", "EntityName": "Payment"})
 	if err != nil {
@@ -531,7 +562,7 @@ func TestRenderSource_FileTargetBeatsLayoutRule(t *testing.T) {
 	m := &jig.Jig{Files: []jig.FileEntry{
 		{Path: "java/special.txt", Target: "docs/special.txt"},
 	}}
-	files, err := RenderSource(
+	files, _, err := RenderSource(
 		Source{Dir: dir, Manifest: m, Label: "leaf",
 			Layout: []ResolvedLayout{{From: "java", To: "src/main/java"}}},
 		Context{})
@@ -549,7 +580,7 @@ func TestRenderSource_DirectoryTargetMapsSubtree(t *testing.T) {
 	writeFile(t, dir, jig.FileName, "name: leaf\n")
 	writeFile(t, dir, "java/a/b/Deep.java", "x\n")
 
-	files, err := RenderSource(
+	files, _, err := RenderSource(
 		Source{Dir: dir, Manifest: &jig.Jig{}, Label: "leaf",
 			Layout: []ResolvedLayout{{From: "java", To: "src/main/java/com/acme"}}},
 		Context{})

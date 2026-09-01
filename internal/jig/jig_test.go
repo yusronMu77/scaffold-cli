@@ -400,3 +400,88 @@ func TestLoadRoot_RejectsEmptyRegistry(t *testing.T) {
 		t.Fatal("expected a root jig with no scaffolds to be rejected (the registry is mandatory)")
 	}
 }
+
+func TestFileEntry_Anchor(t *testing.T) {
+	if _, _, ok := (FileEntry{Path: "a.txt"}).Anchor(); ok {
+		t.Error("expected an entry with neither insert field set to report ok=false")
+	}
+
+	pattern, after, ok := FileEntry{Path: "a.txt", InsertAfter: "// routes"}.Anchor()
+	if !ok || !after || pattern != "// routes" {
+		t.Errorf("expected InsertAfter to report (%q, true, true), got (%q, %v, %v)",
+			"// routes", pattern, after, ok)
+	}
+
+	pattern, after, ok = FileEntry{Path: "a.txt", InsertBefore: "}"}.Anchor()
+	if !ok || after || pattern != "}" {
+		t.Errorf("expected InsertBefore to report (%q, false, true), got (%q, %v, %v)", "}", pattern, after, ok)
+	}
+}
+
+func TestLoad_RejectsBothInsertAfterAndInsertBefore(t *testing.T) {
+	dir := t.TempDir()
+	path := writeJig(t, dir, FileName, `
+name: "Leaf"
+description: "d"
+files:
+  - path: "snippet.tpl"
+    target: "Controller.java"
+    insert_after: "// routes"
+    insert_before: "}"
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected setting both insert_after and insert_before to be rejected")
+	}
+}
+
+func TestLoad_RejectsAnchorRegexWithNoAnchor(t *testing.T) {
+	dir := t.TempDir()
+	path := writeJig(t, dir, FileName, `
+name: "Leaf"
+description: "d"
+files:
+  - path: "snippet.tpl"
+    target: "Controller.java"
+    anchor_regex: true
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected anchor_regex with no insert_after/insert_before to be rejected")
+	}
+}
+
+func TestLoad_RejectsInvalidAnchorRegex(t *testing.T) {
+	dir := t.TempDir()
+	path := writeJig(t, dir, FileName, `
+name: "Leaf"
+description: "d"
+files:
+  - path: "snippet.tpl"
+    target: "Controller.java"
+    insert_after: "["
+    anchor_regex: true
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected an invalid anchor regexp to fail at load time, not later during lint")
+	}
+}
+
+func TestLoad_AcceptsValidInsertEntry(t *testing.T) {
+	dir := t.TempDir()
+	path := writeJig(t, dir, FileName, `
+name: "Leaf"
+description: "d"
+files:
+  - path: "snippet.tpl"
+    target: "Controller.java"
+    insert_after: "// @scaffold:routes"
+    anchor_regex: false
+`)
+	m, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	pattern, after, ok := m.Files[0].Anchor()
+	if !ok || !after || pattern != "// @scaffold:routes" {
+		t.Errorf("expected the anchor to round-trip, got (%q, %v, %v)", pattern, after, ok)
+	}
+}
