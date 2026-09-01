@@ -33,7 +33,12 @@ func ApplyInserts(target string, inserts []Insert) (applied, skipped []string, e
 			}
 		}
 
-		if bytes.Contains(content, ins.Content) {
+		// Compared with CRLF normalized away on both sides: the target file may use CRLF (its own
+		// convention, restored on write by spliceAtAnchor) while ins.Content - freshly rendered
+		// from a template file - is whatever line ending that source file happens to use. Without
+		// normalizing here, a CRLF-converted spliced block would never match an LF ins.Content,
+		// and the same insert would splice again on every rerun instead of being skipped.
+		if bytes.Contains(normalizeNewlines(content), normalizeNewlines(ins.Content)) {
 			skipped = append(skipped, ins.Path)
 			continue
 		}
@@ -53,6 +58,10 @@ func ApplyInserts(target string, inserts []Insert) (applied, skipped []string, e
 		}
 	}
 	return applied, skipped, nil
+}
+
+func normalizeNewlines(b []byte) []byte {
+	return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
 }
 
 func direction(after bool) string {

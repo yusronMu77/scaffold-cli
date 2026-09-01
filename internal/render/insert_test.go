@@ -109,6 +109,33 @@ func TestApplyInserts_IdempotentOnRepeat(t *testing.T) {
 	}
 }
 
+// A target file that uses CRLF (its own convention, restored on write by spliceAtAnchor) must
+// still be recognized as "already spliced" against an ins.Content that itself uses plain LF -
+// exactly what a template file checked out with git's core.autocrlf produces.
+func TestApplyInserts_IdempotentAcrossMixedLineEndings(t *testing.T) {
+	target := t.TempDir()
+	writeFile(t, target, "Controller.java", "class Controller {\r\n// @scaffold:routes\r\n}\r\n")
+
+	ins := []Insert{
+		{Path: "Controller.java", Content: []byte("newRoute();\n"), Anchor: "// @scaffold:routes", After: true, Source: "leaf"},
+	}
+	if _, _, err := ApplyInserts(target, ins); err != nil {
+		t.Fatalf("first ApplyInserts: %v", err)
+	}
+	applied, skipped, err := ApplyInserts(target, ins)
+	if err != nil {
+		t.Fatalf("second ApplyInserts: %v", err)
+	}
+	if len(applied) != 0 || len(skipped) != 1 {
+		t.Errorf("expected the CRLF target to be recognized as already spliced against an LF "+
+			"ins.Content, applied=%v skipped=%v", applied, skipped)
+	}
+	got := readFile(t, target, "Controller.java")
+	if strings.Count(got, "newRoute();") != 1 {
+		t.Errorf("expected exactly one copy of the spliced line, got:\n%s", got)
+	}
+}
+
 func TestApplyInserts_RegexAnchor(t *testing.T) {
 	target := t.TempDir()
 	writeFile(t, target, "Controller.java", "class Controller {\n// route: /a\n}\n")
