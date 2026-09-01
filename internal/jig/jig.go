@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -72,11 +73,33 @@ type FileEntry struct {
 
 	// Condition names a variable that must be truthy for this file to be emitted.
 	Condition string `yaml:"condition,omitempty"`
+
+	// InsertAfter/InsertBefore make this entry splice its rendered content into an
+	// already-existing target file instead of writing a new one - the anchor names a line,
+	// matched literally by default or as a regexp when AnchorRegex is set. Mutually exclusive
+	// with each other.
+	InsertAfter  string `yaml:"insert_after,omitempty"`
+	InsertBefore string `yaml:"insert_before,omitempty"`
+
+	// AnchorRegex treats InsertAfter/InsertBefore as a Go regexp instead of a literal substring.
+	AnchorRegex bool `yaml:"anchor_regex,omitempty"`
 }
 
 // ShouldTemplate reports whether this entry's file should be rendered as a template.
 func (f FileEntry) ShouldTemplate() bool {
 	return f.Template == nil || *f.Template
+}
+
+// Anchor reports this entry's splice point, if it declares one.
+func (f FileEntry) Anchor() (pattern string, after, ok bool) {
+	switch {
+	case f.InsertAfter != "":
+		return f.InsertAfter, true, true
+	case f.InsertBefore != "":
+		return f.InsertBefore, false, true
+	default:
+		return "", false, false
+	}
 }
 
 // Dependency is one entry in a jig's `dependencies:` list — an opaque map of key/value pairs the
@@ -336,6 +359,27 @@ func (m *Jig) Validate(path string) error {
 				"positional a variable can bind to is \"name\"", path, v.Name, v.FromPositional)
 		}
 	}
+	for i, f := range m.Files {
+		if f.InsertAfter != "" && f.InsertBefore != "" {
+			return fmt.Errorf("jig at %s: files[%d] (%s) sets both `insert_after` and "+
+				"`insert_before` - an entry can only splice relative to one anchor",
+				path, i, f.Path)
+		}
+		if f.AnchorRegex {
+			pattern, _, ok := f.Anchor()
+			if !ok {
+				return fmt.Errorf("jig at %s: files[%d] (%s) sets `anchor_regex` but declares "+
+					"neither `insert_after` nor `insert_before`", path, i, f.Path)
+			}
+			// Compiled eagerly here, like Verify.Timeout below, so a bad regexp fails at load
+			// time - for every command, not just discovered later during `lint`.
+			if _, err := regexp.Compile(pattern); err != nil {
+				return fmt.Errorf("jig at %s: files[%d] (%s) has an invalid anchor regexp: %w",
+					path, i, f.Path, err)
+			}
+		}
+	}
+
 	// Verify commands are validated eagerly here, not discovered later during `lint --build`.
 	for i, v := range m.Verify {
 		switch {

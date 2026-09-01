@@ -331,11 +331,15 @@ func lintOne(root string, c lintCase) ([]render.File, []render.Verification, err
 	if err != nil {
 		return nil, nil, err
 	}
-	files, _, err := renderPlan(p)
+	// Inserts are rendered and validated here (proving the snippet template parses; the anchor
+	// regexp, if any, was already compiled eagerly by jig.Validate at load time), but never
+	// applied - lint's combinations are always fresh in-memory trees, so there is never a
+	// pre-existing file to splice into.
+	files, inserts, _, err := renderPlan(p)
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(files) == 0 {
+	if len(files) == 0 && len(inserts) == 0 {
 		return nil, nil, fmt.Errorf("renders no files at all - the chain contributes nothing")
 	}
 	checks, err := render.CollectVerifications(p.Sources, p.Context)

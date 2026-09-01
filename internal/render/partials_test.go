@@ -27,7 +27,7 @@ func TestPartials_IncludeResolvesAcrossSources(t *testing.T) {
 	}
 
 	sources[1].Partials = partials
-	files, err := RenderSource(sources[1], Context{"Owner": "Acme"})
+	files, _, err := RenderSource(sources[1], Context{"Owner": "Acme"})
 	if err != nil {
 		t.Fatalf("RenderSource: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestPartials_AreNeverEmitted(t *testing.T) {
 	}
 	src.Partials = partials
 
-	files, err := RenderSource(src, Context{})
+	files, _, err := RenderSource(src, Context{})
 	if err != nil {
 		t.Fatalf("RenderSource: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestPartials_DeeperDefinitionWins(t *testing.T) {
 	}
 	sources[1].Partials = partials
 
-	files, err := RenderSource(sources[1], Context{})
+	files, _, err := RenderSource(sources[1], Context{})
 	if err != nil {
 		t.Fatalf("RenderSource: %v", err)
 	}
@@ -108,7 +108,7 @@ b{{ end }}`)
 	}
 	src.Partials = partials
 
-	files, err := RenderSource(src, Context{})
+	files, _, err := RenderSource(src, Context{})
 	if err != nil {
 		t.Fatalf("RenderSource: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestPartials_UnknownNameIsAnError(t *testing.T) {
 	}
 	src.Partials = partials
 
-	if _, err := RenderSource(src, Context{}); err == nil {
+	if _, _, err := RenderSource(src, Context{}); err == nil {
 		t.Fatal("expected an unknown partial name to fail the render, got nil")
 	}
 }

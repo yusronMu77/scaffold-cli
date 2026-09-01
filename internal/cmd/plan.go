@@ -225,12 +225,12 @@ func resolvePlan(args *parsedArgs, root, scaffold, template, name string) (*plan
 	return p, nil
 }
 
-// renderPlan turns a resolved plan into the final file tree, plus a per-path record of who
-// contributed what (used by --explain).
-func renderPlan(p *plan) ([]render.File, map[string][]render.Contribution, error) {
+// renderPlan turns a resolved plan into the final file tree, the anchor-based inserts declared
+// alongside it, and a per-path record of who contributed what file (used by --explain).
+func renderPlan(p *plan) ([]render.File, []render.Insert, map[string][]render.Contribution, error) {
 	layout, err := render.CollectLayout(p.Manifests, p.Context)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// Partials are collected across every source before anything renders, so a fragment declared
@@ -238,23 +238,25 @@ func renderPlan(p *plan) ([]render.File, map[string][]render.Contribution, error
 	// mentioned again. Deeper definitions of the same name win, like everything else.
 	partials, err := render.CollectPartials(p.Sources)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	trees := make([][]render.File, 0, len(p.Sources))
+	var inserts []render.Insert
 	for _, s := range p.Sources {
 		s.Layout = layout
 		s.Partials = partials
-		tree, err := render.RenderSource(s, p.Context)
+		tree, sourceInserts, err := render.RenderSource(s, p.Context)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		trees = append(trees, tree)
+		inserts = append(inserts, sourceInserts...)
 	}
 
 	files, contributions, err := render.MergeExplained(trees)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	var excludes []string
@@ -264,15 +266,15 @@ func renderPlan(p *plan) ([]render.File, map[string][]render.Contribution, error
 		}
 		rendered, err := render.RenderStrings("exclude pattern", m.Exclude, p.Context)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		excludes = append(excludes, rendered...)
 	}
 	files, err = render.Exclude(files, excludes)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return files, contributions, nil
+	return files, inserts, contributions, nil
 }
 
 // declaredVariables lists every variable the resolved chain declares, sorted by flag name, so the

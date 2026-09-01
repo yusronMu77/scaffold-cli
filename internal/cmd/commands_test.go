@@ -194,6 +194,130 @@ func TestCreate_NestedDimensionOverlayRejectsUnknownValue(t *testing.T) {
 	}
 }
 
+// buildInsertScaffold builds a minimal, separate tree whose one leaf ("web") declares a normal
+// file (Controller.java, with an anchor comment) plus a second file (newroute.snippet) that
+// splices into it via insert_after, rather than being written as a file of its own. Kept separate
+// from buildScaffoldingCode for the same reason buildNestedDimensionScaffold is: this mechanism
+// shouldn't perturb the many existing tests built on that fixture.
+func buildInsertScaffold(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+
+	writeFile(t, root, "jig.yaml", "name: root\nvalues:\n  - name: app\n")
+	writeFile(t, filepath.Join(root, "app"), "jig.yaml", "name: app\nvalues:\n  - name: \"1.0\"\n    default: true\n")
+
+	v := filepath.Join(root, "app", "1.0")
+	writeFile(t, v, "jig.yaml", "name: v\nvalues:\n  - name: templates\n")
+
+	tmpl := filepath.Join(v, "templates")
+	writeFile(t, tmpl, "jig.yaml", "name: T\nrequired: true\nvalues:\n  - name: web\n    default: true\n")
+
+	web := filepath.Join(tmpl, "web")
+	writeFile(t, web, "jig.yaml", `
+name: Web
+files:
+  - path: "newroute.snippet"
+    target: "Controller.java"
+    insert_after: "// @scaffold:routes"
+`)
+	writeFile(t, web, "Controller.java", "class Controller {\n// @scaffold:routes\n}\n")
+	writeFile(t, web, "newroute.snippet", "newRoute();\n")
+
+	return root
+}
+
+// The insert entry's rendered content is spliced into Controller.java after it lands on disk,
+// rather than being written as a file of its own - a single `create` run both writes the base
+// file and splices into it.
+func TestCreate_InsertSplicesIntoFreshlyWrittenFile(t *testing.T) {
+	root := buildInsertScaffold(t)
+	_, outDir, err := createInto(t, root, "app", "web", "svc")
+	if err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+	got := readGenerated(t, outDir, "svc", "Controller.java")
+	want := "class Controller {\n// @scaffold:routes\nnewRoute();\n}\n"
+	if got != want {
+		t.Errorf("expected the snippet to be spliced after the anchor, got:\n%s", got)
+	}
+}
+
+// Re-running create against the same target must not duplicate the spliced block.
+func TestCreate_InsertIsIdempotentAcrossReruns(t *testing.T) {
+	root := buildInsertScaffold(t)
+	outDir := t.TempDir()
+	args := []string{"app", "web", "svc", "--scaffolding-code=" + root, "--output=" + outDir}
+
+	if _, err := run(t, newCreateCommand, args...); err != nil {
+		t.Fatalf("first create failed: %v", err)
+	}
+	out, err := run(t, newCreateCommand, append(args, "--skip-existing")...)
+	if err != nil {
+		t.Fatalf("second create (--skip-existing) failed: %v", err)
+	}
+	if !strings.Contains(out, "already present, skipped") {
+		t.Errorf("expected the rerun to report the insert as already present, got:\n%s", out)
+	}
+	got := readGenerated(t, outDir, "svc", "Controller.java")
+	if strings.Count(got, "newRoute();") != 1 {
+		t.Errorf("expected exactly one spliced copy after two runs, got:\n%s", got)
+	}
+}
+
+// --dry-run must describe pending inserts without touching disk, same as it does for files.
+func TestCreate_DryRunShowsPendingInserts(t *testing.T) {
+	root := buildInsertScaffold(t)
+	out, outDir, err := createInto(t, root, "app", "web", "svc", "--dry-run")
+	if err != nil {
+		t.Fatalf("dry run returned error: %v", err)
+	}
+	if !strings.Contains(out, "Would splice") || !strings.Contains(out, "Controller.java") {
+		t.Errorf("expected the dry run to mention the pending insert, got:\n%s", out)
+	}
+	if _, statErr := os.Stat(filepath.Join(outDir, "svc")); !os.IsNotExist(statErr) {
+		t.Error("--dry-run must not write anything, even with a pending insert")
+	}
+}
+
+// buildInsertOnlyScaffold's one leaf declares nothing but an insert entry - zero plain files. It
+// exists to prove `lint` doesn't mistake that for the "renders no files at all" empty-leaf error.
+func buildInsertOnlyScaffold(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+
+	writeFile(t, root, "jig.yaml", "name: root\nvalues:\n  - name: app\n")
+	writeFile(t, filepath.Join(root, "app"), "jig.yaml", "name: app\nvalues:\n  - name: \"1.0\"\n    default: true\n")
+
+	v := filepath.Join(root, "app", "1.0")
+	writeFile(t, v, "jig.yaml", "name: v\nvalues:\n  - name: templates\n")
+
+	tmpl := filepath.Join(v, "templates")
+	writeFile(t, tmpl, "jig.yaml", "name: T\nrequired: true\nvalues:\n  - name: patch\n    default: true\n")
+
+	patch := filepath.Join(tmpl, "patch")
+	writeFile(t, patch, "jig.yaml", `
+name: Patch
+files:
+  - path: "route.snippet"
+    target: "Controller.java"
+    insert_after: "// @scaffold:routes"
+`)
+	writeFile(t, patch, "route.snippet", "newRoute();\n")
+
+	return root
+}
+
+func TestLint_InsertOnlyLeafDoesNotTripEmptyRenderCheck(t *testing.T) {
+	root := buildInsertOnlyScaffold(t)
+	out, err := run(t, newLintCommand, "--scaffolding-code="+root)
+	if err != nil {
+		t.Fatalf("expected an insert-only leaf to lint cleanly, got: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "renders no files at all") {
+		t.Errorf("expected the insert-only leaf not to trip the empty-render check, got:\n%s", out)
+	}
+}
+
 // TestMain moves the whole test binary into a throwaway directory before anything runs, since
 // `--output` defaults to ".", which for a Go test is the package source directory, and a forgotten
 // flag would otherwise leave generated output committed-adjacent in internal/cmd/.
