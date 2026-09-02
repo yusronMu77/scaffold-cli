@@ -103,8 +103,22 @@ scaffolding_code: ../scaffold-templates
 
 ## Usage
 
-`scaffold-cli` has three commands: `list` to browse what's available, `create` to generate a
-project, and `lint` to check that a templates repository is healthy.
+`scaffold-cli` has four commands: `init` to bootstrap a fresh templates root, `list` to browse
+what's available, `create` to generate a project, and `lint` to check that a templates repository
+is healthy.
+
+### `init` — bootstrap a fresh templates root
+
+```bash
+scaffold init [path]
+```
+
+Writes a starter `jig.yaml` into `path` (default `.`), creating the directory if needed. It's a
+pure local file write - no network calls, no `git init` - meant for starting a brand-new,
+independent templates repository from zero rather than cloning
+[scaffold-templates](https://github.com/yusronMu77/scaffold-templates). The starter registry is
+deliberately empty (`values: []`), so `list`/`create` correctly report nothing to do until you
+register your first scaffold; pass `--force` to overwrite an existing `jig.yaml` at `path`.
 
 ### `list` — browse what's available
 
