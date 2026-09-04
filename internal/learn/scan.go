@@ -39,6 +39,7 @@ var (
 		"secrets.json": true, "secrets.yaml": true, "secrets.yml": true,
 		"kubeconfig": true, ".netrc": true, "htpasswd": true,
 		".env": true, ".envrc": true, ".pgpass": true, ".npmrc": true,
+		".git-credentials": true, ".dockercfg": true, ".pypirc": true,
 	}
 	credentialFileExts = map[string]bool{
 		".pem": true, ".key": true, ".p12": true, ".pfx": true,
@@ -47,11 +48,16 @@ var (
 )
 
 // isCredentialFile reports whether name is an unambiguous credential store rather than part of the
-// pattern being learned. `.env` and friends are matched by prefix too, so `.env.local` and
-// `.env.production` are covered without listing every suffix anyone invents.
+// pattern being learned. Names match with or without a leading dot, since the dotted and undotted
+// spellings of the same store are equally common (`htpasswd` and `.htpasswd`) and dot-files are now
+// scanned. `.env` and friends are matched by prefix too, so `.env.local` and `.env.production` are
+// covered without listing every suffix anyone invents.
 func isCredentialFile(name string) bool {
 	lower := strings.ToLower(name)
-	if credentialFileNames[lower] || credentialFileExts[strings.ToLower(filepath.Ext(lower))] {
+	if credentialFileNames[lower] || credentialFileNames[strings.TrimPrefix(lower, ".")] {
+		return true
+	}
+	if credentialFileExts[strings.ToLower(filepath.Ext(lower))] {
 		return true
 	}
 	return strings.HasPrefix(lower, ".env.")
@@ -100,6 +106,13 @@ func Scan(dir string) ([]SourceFile, []string, error) {
 		if d.Type()&fs.ModeSymlink != 0 {
 			skipped = append(skipped, filepath.ToSlash(rel)+" (symlink)")
 			return nil
+		}
+
+		// Size is checked from the directory entry first so an oversized file fails fast instead of
+		// being pulled into memory in full only to be rejected on the next line.
+		if info, infoErr := d.Info(); infoErr == nil && info.Size() > perFileMaxBytes {
+			return fmt.Errorf("%s is %d bytes, over the %d byte per-file limit for `learn` - "+
+				"trim the example folder to just the pattern itself", rel, info.Size(), perFileMaxBytes)
 		}
 
 		data, readErr := os.ReadFile(path)

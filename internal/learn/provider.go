@@ -19,12 +19,24 @@ func ResolveClient(provider, model, baseURL string) (Inferer, error) {
 	anthropicKey := os.Getenv(EnvAnthropicAPIKey)
 	openAIKey := os.Getenv(EnvOpenAIAPIKey)
 
+	// --base-url only reaches the OpenAI-shaped client; the anthropic one always calls Anthropic's
+	// own endpoint. Accepting it silently would send the request - and the API key - somewhere other
+	// than the gateway the operator named.
+	anthropic := func() (Inferer, error) {
+		if baseURL != "" {
+			return nil, fmt.Errorf("--base-url has no effect on the anthropic provider, which always "+
+				"calls Anthropic's own endpoint - drop it, or pass --provider=openai to point at an "+
+				"OpenAI-compatible gateway (it reads %s)", EnvOpenAIAPIKey)
+		}
+		return NewAnthropicClient(anthropicKey, model), nil
+	}
+
 	switch provider {
 	case "anthropic":
 		if anthropicKey == "" {
 			return nil, fmt.Errorf("--provider=anthropic requires %s to be set", EnvAnthropicAPIKey)
 		}
-		return NewAnthropicClient(anthropicKey, model), nil
+		return anthropic()
 	case "openai":
 		if openAIKey == "" {
 			return nil, fmt.Errorf("--provider=openai requires %s to be set", EnvOpenAIAPIKey)
@@ -37,7 +49,7 @@ func ResolveClient(provider, model, baseURL string) (Inferer, error) {
 				"--provider=openai to choose which one `learn` should call",
 				EnvAnthropicAPIKey, EnvOpenAIAPIKey)
 		case anthropicKey != "":
-			return NewAnthropicClient(anthropicKey, model), nil
+			return anthropic()
 		case openAIKey != "":
 			return NewOpenAIClient(openAIKey, baseURL, model), nil
 		default:

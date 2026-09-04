@@ -43,18 +43,76 @@ func validDraftPath(p string) error {
 		return fmt.Errorf("file path %q names the output directory itself, not a file", p)
 	}
 
-	// jig.yaml is the engine's contract with the template author: written at the root it would
-	// clobber the manifest this draft just generated, and in a subfolder it would turn that folder
-	// into a discovery node whose files `create` then never renders.
-	base := path.Base(clean)
-	if base == jig.FileName {
-		return fmt.Errorf("file path %q is reserved: %s is the manifest this draft generates, so a "+
-			"template file cannot be called that", p, jig.FileName)
+	return reservedBaseName("file path", p, path.Base(clean))
+}
+
+// reservedBaseName rejects a file name the engine owns. The comparison is case-insensitive: on
+// Windows "Jig.yaml" opens the very same file as "jig.yaml", so a case-sensitive check lets a draft
+// file overwrite the manifest WriteDraft wrote moments earlier - and when its content happens to
+// parse as a jig, the self-validation load succeeds and `learn` reports success over a destroyed
+// draft.
+func reservedBaseName(what, p, base string) error {
+	lower := strings.ToLower(base)
+	if lower == strings.ToLower(jig.FileName) {
+		return fmt.Errorf("%s %q is reserved: %s is the manifest this draft generates, so a "+
+			"template file cannot be called that", what, p, jig.FileName)
 	}
-	if jig.IsPartial(base) {
-		return fmt.Errorf("file path %q is reserved: %s*%s holds `define` blocks for other templates "+
+	if jig.IsPartial(lower) {
+		return fmt.Errorf("%s %q is reserved: %s*%s holds `define` blocks for other templates "+
 			"to include and is never emitted as output, so a file that should be generated cannot "+
-			"be called that", p, jig.PartialPrefix, jig.PartialSuffix)
+			"be called that", what, p, jig.PartialPrefix, jig.PartialSuffix)
+	}
+	return nil
+}
+
+// validDraftTarget rejects a `target` that would land somewhere the engine forbids. A target is the
+// path a file takes in a generated project and comes from the same untrusted draft as Path, so it
+// needs the same structural rules. Unlike Path it is a template rendered at `create` time rather
+// than a literal on-disk name, so piped filters and Windows-invalid characters are legitimate in it
+// and only the structural rules apply.
+func validDraftTarget(srcPath, target string) error {
+	if strings.TrimSpace(target) == "" {
+		return fmt.Errorf("file %q has a `target` that is blank; omit it entirely when the file "+
+			"should land exactly where its path says", srcPath)
+	}
+	if filepath.IsAbs(target) || strings.HasPrefix(filepath.ToSlash(target), "/") {
+		return fmt.Errorf("file %q has an absolute target %q; a target is relative to the generated "+
+			"project", srcPath, target)
+	}
+	clean := path.Clean(filepath.ToSlash(target))
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("file %q has target %q, which escapes the generated project", srcPath, target)
+	}
+	if clean == "." {
+		return fmt.Errorf("file %q has target %q, which names the project directory itself, not a "+
+			"file", srcPath, target)
+	}
+	return reservedBaseName("target", target, path.Base(clean))
+}
+
+// validDraftLayout rejects a file set that cannot all exist on one filesystem: two entries writing
+// the same path, where the second silently wins while the report still lists both, or one entry's
+// path being a directory another entry needs (`a` as a file plus `a/b.txt` under it), which fails
+// partway through writing and leaves --output half-populated.
+func validDraftLayout(files []DraftFile) error {
+	seen := map[string]string{}
+	dirs := map[string]bool{}
+	for _, f := range files {
+		clean := path.Clean(filepath.ToSlash(f.Path))
+		if prev, dup := seen[clean]; dup {
+			return fmt.Errorf("two draft files both write %q (%q and %q) - one would silently "+
+				"overwrite the other", clean, prev, f.Path)
+		}
+		seen[clean] = f.Path
+		for d := path.Dir(clean); d != "." && d != "/"; d = path.Dir(d) {
+			dirs[d] = true
+		}
+	}
+	for clean, orig := range seen {
+		if dirs[clean] {
+			return fmt.Errorf("draft file %q is written as a file, but another draft file needs it "+
+				"to be a directory", orig)
+		}
 	}
 	return nil
 }
@@ -97,8 +155,16 @@ func WriteDraft(outputDir string, d *Draft, force bool) error {
 		if err := validDraftPath(f.Path); err != nil {
 			return err
 		}
+		if f.Target != "" {
+			if err := validDraftTarget(f.Path, f.Target); err != nil {
+				return err
+			}
+		}
 	}
-	if err := checkOutputDirEmpty(outputDir, force); err != nil {
+	if err := validDraftLayout(d.Files); err != nil {
+		return err
+	}
+	if err := CheckOutputDir(outputDir, force); err != nil {
 		return err
 	}
 
@@ -152,9 +218,11 @@ func WriteDraft(outputDir string, d *Draft, force bool) error {
 	return nil
 }
 
-// checkOutputDirEmpty refuses to write a draft into a directory that already holds something,
-// unless force is set - the same fail-then-opt-in shape `create` and `init` use.
-func checkOutputDirEmpty(outputDir string, force bool) error {
+// CheckOutputDir refuses to write a draft into a directory that already holds something, unless
+// force is set - the same fail-then-opt-in shape `create` and `init` use. Exported so the command
+// can run it before the provider call: a `learn` run that only discovers a non-empty --output after
+// inferring has already paid for, and then thrown away, a full model call.
+func CheckOutputDir(outputDir string, force bool) error {
 	if force {
 		return nil
 	}

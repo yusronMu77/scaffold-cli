@@ -49,6 +49,21 @@ func TestResolveClient_UnknownProvider(t *testing.T) {
 	}
 }
 
+// --base-url never reaches the anthropic client, so accepting it silently would send the request -
+// and the API key - to Anthropic rather than the gateway the operator named.
+func TestResolveClient_RejectsBaseURLWithAnthropic(t *testing.T) {
+	t.Setenv(EnvAnthropicAPIKey, "sk-ant-test")
+	t.Setenv(EnvOpenAIAPIKey, "")
+
+	if _, err := ResolveClient("anthropic", "", "https://gateway.internal/v1"); err == nil {
+		t.Fatal("expected --base-url with --provider=anthropic to be rejected")
+	}
+	// Auto-detection lands on the same client, so it has to be rejected there too.
+	if _, err := ResolveClient("", "", "https://gateway.internal/v1"); err == nil {
+		t.Fatal("expected --base-url to be rejected when auto-detection picks anthropic")
+	}
+}
+
 func TestResolveClient_ExplicitOpenAI(t *testing.T) {
 	t.Setenv(EnvOpenAIAPIKey, "sk-oai-test")
 	client, err := ResolveClient("openai", "", "https://example.test/v1")

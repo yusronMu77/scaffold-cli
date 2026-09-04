@@ -130,8 +130,11 @@ func inputSchema() map[string]any {
 							"description": "A new identifier, distinct from every variable name",
 						},
 						"value": map[string]any{
-							"type":        "string",
-							"description": "A template expression building on a variable, e.g. \"{{ .Name | kebabcase }}\"",
+							"type": "string",
+							"description": "A template expression building on a variable, e.g. " +
+								"\"{{ .EntityName | kebabcase }}\". Never build on \".Name\", " +
+								"\".Scaffold\", \".Template\" or \".Data\" - those four are the " +
+								"engine's own reserved context keys, not this template's variables",
 						},
 					},
 					"required": []string{"name", "value"},

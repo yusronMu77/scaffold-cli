@@ -28,6 +28,33 @@ func TestScan_SkipsHiddenDirsAndBinaryFiles(t *testing.T) {
 	}
 }
 
+// Keeping dot-files widened what `learn` uploads, so every credential store that used to be
+// covered only by the blanket dot-file skip has to be named in the deny-list. `.htpasswd` is the
+// sharp case: the undotted `htpasswd` was listed while the far more common dotted spelling was not.
+func TestScan_SkipsDottedCredentialFiles(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "src/Widget.java", "class Widget {}")
+	leaks := []string{".htpasswd", ".git-credentials", ".dockercfg", ".pypirc", ".npmrc", ".netrc"}
+	for _, name := range leaks {
+		write(t, dir, name, "secret\n")
+	}
+
+	files, skipped, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	for _, f := range files {
+		if slices.Contains(leaks, f.Path) {
+			t.Errorf("%s would be sent to the provider", f.Path)
+		}
+	}
+	for _, name := range leaks {
+		if !slices.Contains(skipped, name) {
+			t.Errorf("%s was not reported as skipped: %v", name, skipped)
+		}
+	}
+}
+
 // .gitignore and friends are part of the pattern being learned, so a dot-*file* is kept even
 // though a dot-*directory* is skipped. `.env` is the exception - it's a credential store.
 func TestScan_KeepsDotFilesButSkipsDotEnv(t *testing.T) {

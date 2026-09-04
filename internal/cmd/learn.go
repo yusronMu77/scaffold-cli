@@ -53,6 +53,12 @@ func runLearn(cmd *cobra.Command, rawArgs []string) error {
 	if err != nil {
 		return err
 	}
+	// Checked before anything is scanned or inferred, not only inside WriteDraft: with a provider
+	// call in between, a non-empty --output would otherwise surface after a slow, billed inference
+	// whose result is then discarded.
+	if err := learn.CheckOutputDir(learnArgs.outputDir, learnArgs.force); err != nil {
+		return err
+	}
 
 	if learnArgs.draftPath != "" {
 		raw, err := readDraftInput(cmd, learnArgs.draftPath)

@@ -157,6 +157,71 @@ func TestWriteDraft_RejectsReservedFileNames(t *testing.T) {
 	}
 }
 
+// Windows matches filenames case-insensitively, so "Jig.yaml" is the same file as the manifest
+// WriteDraft wrote moments earlier. When the draft file's content happens to parse as a jig, the
+// self-validation load succeeds too - so without a case-insensitive check `learn` reports success
+// over a manifest it destroyed.
+func TestWriteDraft_RejectsReservedFileNamesCaseInsensitively(t *testing.T) {
+	for _, p := range []string{"Jig.yaml", "JIG.YAML", "nested/Jig.Yaml", "_helpers.TPL"} {
+		dir := t.TempDir()
+		d := &Draft{
+			Name:      "reserved-path",
+			Variables: []DraftVariable{{Name: "EntityName", Default: "Widget"}},
+			Files:     []DraftFile{{Path: p, Content: "name: harmless\n"}},
+		}
+		if err := WriteDraft(dir, d, false); err == nil {
+			t.Fatalf("expected file path %q to be rejected as reserved", p)
+		}
+	}
+}
+
+// `target` is the path a file takes in a generated project and comes from the same untrusted draft
+// as `path`, but validDraftPath never saw it - so every reserved-name and escape rule was one
+// field away from being bypassed.
+func TestWriteDraft_RejectsBadTarget(t *testing.T) {
+	for _, target := range []string{jig.FileName, "Jig.yaml", "_helpers.tpl", "../escaped.txt",
+		"/etc/passwd", ".", "  "} {
+		dir := t.TempDir()
+		d := &Draft{
+			Name:  "bad-target",
+			Files: []DraftFile{{Path: "config.txt", Content: "x", Target: target}},
+		}
+		if err := WriteDraft(dir, d, false); err == nil {
+			t.Fatalf("expected target %q to be rejected", target)
+		}
+	}
+}
+
+// Two entries writing the same path, or an entry whose path another entry needs as a directory,
+// fail partway through writing and leave --output half-populated - which the non-empty check then
+// refuses to let the user retry into.
+func TestWriteDraft_RejectsConflictingPaths(t *testing.T) {
+	cases := map[string][]DraftFile{
+		"duplicate path": {
+			{Path: "a.txt", Content: "first"},
+			{Path: "./a.txt", Content: "second"},
+		},
+		"file used as a directory": {
+			{Path: "a", Content: "i am a file"},
+			{Path: "a/b.txt", Content: "i need a to be a directory"},
+		},
+	}
+	for name, files := range cases {
+		dir := t.TempDir()
+		d := &Draft{Name: "conflicting", Files: files}
+		if err := WriteDraft(dir, d, false); err == nil {
+			t.Fatalf("%s: expected WriteDraft to reject the file set", name)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("%s: --output was left populated after a rejected draft: %d entries", name, len(entries))
+		}
+	}
+}
+
 // --output pointed at an existing template must not silently overwrite it, which is the whole
 // reason --output is mandatory in the first place.
 func TestWriteDraft_RefusesNonEmptyOutputWithoutForce(t *testing.T) {
