@@ -91,6 +91,10 @@ func Scan(dir string) ([]SourceFile, []string, error) {
 			return relErr
 		}
 		if d.IsDir() {
+			// Every dot-directory is skipped, `.github` included: `learn` targets the code pattern,
+			// not the repository around it. Decided deliberately (2026-09-05) rather than
+			// allowlisted, since widening what leaves the machine is what let credential files
+			// through once already.
 			if rel != "." && len(d.Name()) > 0 && d.Name()[0] == '.' {
 				return filepath.SkipDir
 			}
