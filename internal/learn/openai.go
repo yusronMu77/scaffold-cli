@@ -153,5 +153,5 @@ func (c *openAIClient) Infer(ctx context.Context, files []SourceFile) (*Draft, e
 	if call.Function.Name != toolName {
 		return nil, fmt.Errorf("openai-compatible response called %q, expected %q", call.Function.Name, toolName)
 	}
-	return parseDraft([]byte(call.Function.Arguments))
+	return ParseDraft([]byte(call.Function.Arguments))
 }

@@ -171,9 +171,11 @@ type rawDraft struct {
 	} `json:"files"`
 }
 
-// parseDraft decodes one provider's tool-call arguments (already-parsed JSON object bytes) into a
-// Draft.
-func parseDraft(raw []byte) (*Draft, error) {
+// ParseDraft decodes a draft's JSON representation - either one provider's tool-call arguments, or
+// a draft an AI agent produced itself (see the --draft flag: an agent invoking `learn` is already
+// an LLM, so it can do the invariant/variable separation inline, at no extra API cost, and hand
+// the result straight to WriteDraft instead of making a second, separately-billed model call).
+func ParseDraft(raw []byte) (*Draft, error) {
 	var rd rawDraft
 	if err := json.Unmarshal(raw, &rd); err != nil {
 		return nil, fmt.Errorf("model returned a malformed draft: %w", err)

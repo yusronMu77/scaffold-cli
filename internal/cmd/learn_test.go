@@ -110,6 +110,84 @@ func TestLearn_WritesValidDraftAndReportsIt(t *testing.T) {
 	}
 }
 
+const sampleDraftJSON = `{
+	"name": "widget-controller",
+	"description": "A learned controller",
+	"variables": [
+		{"name": "ClassName", "prompt": "Entity class name", "default": "Widget", "required": true}
+	],
+	"files": [
+		{"path": "{{ .ClassName }}Controller.java", "content": "class {{ .ClassName }}Controller {}\n"}
+	]
+}`
+
+// --draft skips provider resolution entirely, so it must work with neither API key env var set.
+func TestLearn_DraftFlagFromFile(t *testing.T) {
+	t.Setenv(learn.EnvAnthropicAPIKey, "")
+	t.Setenv(learn.EnvOpenAIAPIKey, "")
+
+	exampleDir := writeExampleFolder(t)
+	outDir := filepath.Join(t.TempDir(), "draft")
+	draftPath := filepath.Join(t.TempDir(), "draft.json")
+	if err := os.WriteFile(draftPath, []byte(sampleDraftJSON), 0o644); err != nil {
+		t.Fatalf("writing draft fixture: %v", err)
+	}
+
+	out, err := run(t, newLearnCommand, exampleDir, "--output="+outDir, "--draft="+draftPath)
+	if err != nil {
+		t.Fatalf("learn --draft returned error: %v", err)
+	}
+	if _, err := jig.Load(filepath.Join(outDir, jig.FileName)); err != nil {
+		t.Fatalf("jig.Load on the written draft failed: %v", err)
+	}
+	if !strings.Contains(out, "widget-controller") {
+		t.Errorf("expected output to mention the draft name, got:\n%s", out)
+	}
+}
+
+func TestLearn_DraftFlagFromStdin(t *testing.T) {
+	t.Setenv(learn.EnvAnthropicAPIKey, "")
+	t.Setenv(learn.EnvOpenAIAPIKey, "")
+
+	exampleDir := writeExampleFolder(t)
+	outDir := filepath.Join(t.TempDir(), "draft")
+
+	cmd := newLearnCommand()
+	var buf strings.Builder
+	cmd.SetOut(&buf)
+	cmd.SetIn(strings.NewReader(sampleDraftJSON))
+	cmd.SetArgs([]string{exampleDir, "--output=" + outDir, "--draft=-"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("learn --draft=- returned error: %v", err)
+	}
+	if _, err := jig.Load(filepath.Join(outDir, jig.FileName)); err != nil {
+		t.Fatalf("jig.Load on the written draft failed: %v", err)
+	}
+}
+
+func TestLearn_DraftRejectsProviderFlags(t *testing.T) {
+	exampleDir := writeExampleFolder(t)
+	_, err := run(t, newLearnCommand, exampleDir, "--output="+t.TempDir(),
+		"--draft="+filepath.Join(t.TempDir(), "draft.json"), "--provider=anthropic")
+	if err == nil || !strings.Contains(err.Error(), "don't apply together") {
+		t.Fatalf("expected --draft combined with --provider to be rejected, got %v", err)
+	}
+}
+
+func TestLearn_DraftMalformedJSONSurfacesError(t *testing.T) {
+	exampleDir := writeExampleFolder(t)
+	outDir := filepath.Join(t.TempDir(), "draft")
+	draftPath := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(draftPath, []byte("not json"), 0o644); err != nil {
+		t.Fatalf("writing bad draft fixture: %v", err)
+	}
+
+	_, err := run(t, newLearnCommand, exampleDir, "--output="+outDir, "--draft="+draftPath)
+	if err == nil {
+		t.Fatal("expected a malformed --draft JSON to surface an error")
+	}
+}
+
 func writeExampleFolder(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

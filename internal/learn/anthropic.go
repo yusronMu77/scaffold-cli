@@ -126,7 +126,7 @@ func (c *anthropicClient) Infer(ctx context.Context, files []SourceFile) (*Draft
 
 	for _, block := range parsed.Content {
 		if block.Type == "tool_use" && block.Name == toolName {
-			return parseDraft(block.Input)
+			return ParseDraft(block.Input)
 		}
 	}
 	return nil, fmt.Errorf("anthropic response did not include a %s tool call", toolName)

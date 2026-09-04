@@ -179,6 +179,7 @@ any failure, so it works as a CI gate.
 
 ```bash
 scaffold learn <path> --output=<dir> [--provider=anthropic|openai] [--model=...] [--base-url=...]
+scaffold learn <path> --output=<dir> --draft=<path|->   # already-reasoned draft, no provider call
 ```
 
 Points at one already-written example folder (a real controller, a CDK stack, ...), calls an LLM
@@ -200,8 +201,15 @@ same deterministic `create` path as every other template — zero further AI cal
 (Groq, OpenRouter, a local Ollama server, ...) without any code changes. `--model` overrides the
 per-provider default.
 
-This makes real calls to whichever provider you configure, at that provider's usual cost — there's
-no local/offline mode.
+This makes a real call to whichever provider you configure, at that provider's usual cost.
+
+**`--draft=<path|->` skips the provider call entirely.** An AI agent invoking `learn` (e.g. via
+`scaffold-cli-skill`) is already an LLM — rather than pay for a second, separately-billed model
+call, it can do the invariant/variable separation itself and hand the result straight to `learn`
+as JSON (matching the same schema a provider call would produce — see `internal/learn/prompt.go`
+for the exact shape), either as a file path or `-` for stdin. No `ANTHROPIC_API_KEY`/
+`OPENAI_API_KEY`/`--provider`/`--model`/`--base-url` needed in this mode; combining `--draft` with
+any of those is rejected rather than silently ignored.
 
 ## Creating a template
 
