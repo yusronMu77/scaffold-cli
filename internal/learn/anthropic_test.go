@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -52,6 +53,33 @@ func TestAnthropicClient_Infer_ParsesToolUseResponse(t *testing.T) {
 	}
 	if draft.Name != "widget" || len(draft.Variables) != 1 || draft.Variables[0].Name != "ClassName" {
 		t.Fatalf("unexpected draft: %+v", draft)
+	}
+}
+
+func TestAnthropicClient_Infer_ReportsTruncatedDraft(t *testing.T) {
+	// A response cut off at max_tokens is still HTTP 200, and its tool_use input carries only the
+	// fields that fit - here a name with no files. Without the stop_reason check that surfaces as
+	// "a draft with no files", blaming the model for what is really a budget problem.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{
+			"stop_reason": "max_tokens",
+			"content": [{"type": "tool_use", "name": "` + toolName + `", "input": {"name": "widget"}}]
+		}`))
+	}))
+	defer srv.Close()
+
+	orig := anthropicEndpoint
+	anthropicEndpoint = srv.URL
+	defer func() { anthropicEndpoint = orig }()
+
+	c := &anthropicClient{apiKey: "test-key", model: "test-model", http: srv.Client()}
+	_, err := c.Infer(context.Background(), []SourceFile{{Path: "a.java", Content: "x"}})
+	if err == nil {
+		t.Fatal("expected an error for a response truncated at max_tokens")
+	}
+	if !strings.Contains(err.Error(), "output limit") {
+		t.Errorf("expected the error to name the output limit, got %v", err)
 	}
 }
 

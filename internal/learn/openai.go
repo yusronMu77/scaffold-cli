@@ -1,11 +1,9 @@
 package learn
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -88,6 +86,7 @@ type openAIResponse struct {
 				} `json:"function"`
 			} `json:"tool_calls"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
@@ -117,37 +116,39 @@ func (c *openAIClient) Infer(ctx context.Context, files []SourceFile) (*Draft, e
 		return nil, fmt.Errorf("building openai request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	headers := map[string]string{
+		"Authorization": "Bearer " + c.apiKey,
+		"content-type":  "application/json",
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	httpReq.Header.Set("content-type", "application/json")
-
-	resp, err := c.http.Do(httpReq)
+	respBody, status, err := postJSON(ctx, c.http, c.baseURL+"/chat/completions", headers, body)
 	if err != nil {
 		return nil, fmt.Errorf("calling openai-compatible endpoint: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading openai-compatible response: %w", err)
 	}
 
 	var parsed openAIResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("parsing openai-compatible response (status %d): %w\n%s", resp.StatusCode, err, respBody)
+		return nil, fmt.Errorf("parsing openai-compatible response (status %d): %w\n%s", status, err, respBody)
 	}
-	if resp.StatusCode != http.StatusOK {
+	if status != http.StatusOK {
 		if parsed.Error != nil {
 			return nil, fmt.Errorf("openai-compatible API error (%s): %s", parsed.Error.Type, parsed.Error.Message)
 		}
-		return nil, fmt.Errorf("openai-compatible API returned status %d: %s", resp.StatusCode, respBody)
+		return nil, fmt.Errorf("openai-compatible API returned status %d: %s", status, respBody)
 	}
 
 	if len(parsed.Choices) == 0 || len(parsed.Choices[0].Message.ToolCalls) == 0 {
+		// A response truncated at the endpoint's own output limit is still HTTP 200 and carries no
+		// usable tool call, so say so instead of reporting a missing tool call with no cause.
+		if len(parsed.Choices) > 0 && parsed.Choices[0].FinishReason == "length" {
+			return nil, fmt.Errorf("the endpoint hit its output limit before finishing the draft " +
+				"(finish_reason=length) - the example folder is too large to emit as one template; " +
+				"trim it to just the pattern itself")
+		}
 		return nil, fmt.Errorf("openai-compatible response did not include a %s tool call", toolName)
+	}
+	if parsed.Choices[0].FinishReason == "length" {
+		return nil, fmt.Errorf("the endpoint hit its output limit mid-draft (finish_reason=length), " +
+			"so the tool call is cut off - trim the example folder to just the pattern itself")
 	}
 	call := parsed.Choices[0].Message.ToolCalls[0]
 	if call.Function.Name != toolName {

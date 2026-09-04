@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // SourceFile is one file read from the example folder, relative path plus content.
@@ -25,19 +26,46 @@ const (
 	totalMaxBytes   = 1_000_000
 )
 
-// Scan walks dir and returns every text file in it, skipping dot-directories (.git and similar)
+// credentialFileNames and credentialFileExts are files whose whole purpose is holding secrets.
+// `learn` ships everything it scans to a third-party provider, so these are skipped even when they
+// sit inside the pattern being learned - a template can be re-authored, a leaked key cannot be
+// un-sent. Deliberately limited to unambiguous credential stores: ordinary config files
+// (application.properties and friends) are part of the template and stay in.
+var (
+	credentialFileNames = map[string]bool{
+		"id_rsa": true, "id_dsa": true, "id_ecdsa": true, "id_ed25519": true,
+		"credentials": true, "credentials.json": true, "service-account.json": true,
+		"secrets.json": true, "secrets.yaml": true, "secrets.yml": true,
+		"kubeconfig": true, ".netrc": true, "htpasswd": true,
+	}
+	credentialFileExts = map[string]bool{
+		".pem": true, ".key": true, ".p12": true, ".pfx": true,
+		".jks": true, ".keystore": true, ".ppk": true,
+	}
+)
+
+// isCredentialFile reports whether name is an unambiguous credential store rather than part of the
+// pattern being learned.
+func isCredentialFile(name string) bool {
+	lower := strings.ToLower(name)
+	return credentialFileNames[lower] || credentialFileExts[strings.ToLower(filepath.Ext(lower))]
+}
+
+// Scan walks dir and returns every text file in it, plus the relative paths it deliberately left
+// out (credential stores - see credentialFileNames), skipping dot-directories (.git and similar)
 // and anything that sniffs as binary. Files are returned in a stable, sorted order so the prompt
 // built from them is deterministic run to run.
-func Scan(dir string) ([]SourceFile, error) {
+func Scan(dir string) ([]SourceFile, []string, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
-		return nil, fmt.Errorf("reading example folder %s: %w", dir, err)
+		return nil, nil, fmt.Errorf("reading example folder %s: %w", dir, err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("%s is not a directory", dir)
+		return nil, nil, fmt.Errorf("%s is not a directory", dir)
 	}
 
 	var files []SourceFile
+	var skipped []string
 	total := 0
 
 	err = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
@@ -55,6 +83,10 @@ func Scan(dir string) ([]SourceFile, error) {
 			return nil
 		}
 		if len(d.Name()) > 0 && d.Name()[0] == '.' {
+			return nil
+		}
+		if isCredentialFile(d.Name()) {
+			skipped = append(skipped, filepath.ToSlash(rel))
 			return nil
 		}
 
@@ -78,14 +110,15 @@ func Scan(dir string) ([]SourceFile, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	sort.Strings(skipped)
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no text files found under %s to learn from", dir)
+		return nil, nil, fmt.Errorf("no text files found under %s to learn from", dir)
 	}
-	return files, nil
+	return files, skipped, nil
 }
 
 // looksBinary sniffs a file the same way `file`/git do: a NUL byte in the first chunk means

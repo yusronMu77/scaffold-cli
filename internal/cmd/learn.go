@@ -136,9 +136,18 @@ func runLearnWithDraftJSON(cmd *cobra.Command, outputDir string, raw []byte) err
 // runLearnWithClient does the actual scan/infer/write, taking an already-resolved Inferer so
 // tests can inject a fake one and never touch the network.
 func runLearnWithClient(cmd *cobra.Command, path, outputDir string, client learn.Inferer) error {
-	files, err := learn.Scan(path)
+	files, skipped, err := learn.Scan(path)
 	if err != nil {
 		return err
+	}
+	// Said before the call, not after: the point is the user knows what did and didn't leave the
+	// machine, and the call is what sends it.
+	if len(skipped) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"Skipped %d credential file(s) - not sent to the provider:\n", len(skipped))
+		for _, s := range skipped {
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", s)
+		}
 	}
 
 	draft, err := client.Infer(context.Background(), files)

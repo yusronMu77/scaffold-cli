@@ -1,11 +1,9 @@
 package learn
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 )
@@ -19,8 +17,11 @@ var anthropicEndpoint = "https://api.anthropic.com/v1/messages"
 const (
 	// anthropicVersion is the API version header Anthropic has kept stable for a long time; worth
 	// reconfirming against a live response if requests start failing after a provider-side change.
-	anthropicVersion   = "2023-06-01"
-	anthropicMaxTokens = 8192
+	anthropicVersion = "2023-06-01"
+	// anthropicMaxTokens has to cover a draft that echoes every scanned file back as templated
+	// content, so it is sized well above a single file. Kept at a non-streaming-safe value: much
+	// larger ceilings need a streaming request to avoid HTTP timeouts.
+	anthropicMaxTokens = 16384
 )
 
 // anthropicClient implements Inferer against Anthropic's Messages API directly (no SDK): a forced
@@ -70,7 +71,8 @@ type anthropicResponse struct {
 		Name  string          `json:"name"`
 		Input json.RawMessage `json:"input"`
 	} `json:"content"`
-	Error *struct {
+	StopReason string `json:"stop_reason"`
+	Error      *struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	} `json:"error"`
@@ -94,34 +96,32 @@ func (c *anthropicClient) Infer(ctx context.Context, files []SourceFile) (*Draft
 		return nil, fmt.Errorf("building anthropic request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicEndpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	headers := map[string]string{
+		"x-api-key":         c.apiKey,
+		"anthropic-version": anthropicVersion,
+		"content-type":      "application/json",
 	}
-	httpReq.Header.Set("x-api-key", c.apiKey)
-	httpReq.Header.Set("anthropic-version", anthropicVersion)
-	httpReq.Header.Set("content-type", "application/json")
-
-	resp, err := c.http.Do(httpReq)
+	respBody, status, err := postJSON(ctx, c.http, anthropicEndpoint, headers, body)
 	if err != nil {
 		return nil, fmt.Errorf("calling anthropic: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading anthropic response: %w", err)
 	}
 
 	var parsed anthropicResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("parsing anthropic response (status %d): %w\n%s", resp.StatusCode, err, respBody)
+		return nil, fmt.Errorf("parsing anthropic response (status %d): %w\n%s", status, err, respBody)
 	}
-	if resp.StatusCode != http.StatusOK {
+	if status != http.StatusOK {
 		if parsed.Error != nil {
 			return nil, fmt.Errorf("anthropic API error (%s): %s", parsed.Error.Type, parsed.Error.Message)
 		}
-		return nil, fmt.Errorf("anthropic API returned status %d: %s", resp.StatusCode, respBody)
+		return nil, fmt.Errorf("anthropic API returned status %d: %s", status, respBody)
+	}
+	// A truncated response is still HTTP 200, and its tool_use JSON is cut off mid-object - parsing
+	// it would surface as a confusing "malformed draft" instead of the real cause.
+	if parsed.StopReason == "max_tokens" {
+		return nil, fmt.Errorf("anthropic hit the %d-token output limit before finishing the draft - "+
+			"the example folder is too large to emit as one template; trim it to just the pattern itself",
+			anthropicMaxTokens)
 	}
 
 	for _, block := range parsed.Content {
