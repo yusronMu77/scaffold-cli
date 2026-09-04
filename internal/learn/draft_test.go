@@ -1,6 +1,7 @@
 package learn
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -56,6 +57,42 @@ func TestWriteDraft_RejectsPipedPathFilter(t *testing.T) {
 	err := WriteDraft(dir, d)
 	if err == nil || !strings.Contains(err.Error(), "cannot appear in a filename") {
 		t.Fatalf("expected a clear piped-path-filter error, got %v", err)
+	}
+}
+
+// A draft's Files come from a provider's tool call or an agent-supplied --draft JSON, neither of
+// which is trusted input, so WriteDraft must reject a path that would escape outputDir instead of
+// silently writing outside it via filepath.Join's ".." handling.
+func TestWriteDraft_RejectsPathEscapingOutputDir(t *testing.T) {
+	dir := t.TempDir()
+	d := &Draft{
+		Name:      "broken",
+		Variables: []DraftVariable{{Name: "ClassName", Default: "Widget"}},
+		Files: []DraftFile{
+			{Path: "../../escaped.txt", Content: "x"},
+		},
+	}
+	if err := WriteDraft(dir, d); err == nil {
+		t.Fatal("expected WriteDraft to reject a file path escaping the output directory")
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(filepath.Dir(dir)), "escaped.txt")); err == nil {
+		t.Fatal("escaped.txt was written outside the output directory")
+	}
+}
+
+// An absolute path bypasses outputDir entirely rather than merely escaping it via "..".
+func TestWriteDraft_RejectsAbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+	abs := filepath.Join(t.TempDir(), "evil.txt")
+	d := &Draft{
+		Name:      "broken",
+		Variables: []DraftVariable{{Name: "ClassName", Default: "Widget"}},
+		Files: []DraftFile{
+			{Path: abs, Content: "x"},
+		},
+	}
+	if err := WriteDraft(dir, d); err == nil {
+		t.Fatal("expected WriteDraft to reject an absolute file path")
 	}
 }
 

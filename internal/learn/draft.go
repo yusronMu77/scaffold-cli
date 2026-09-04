@@ -3,6 +3,7 @@ package learn
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -17,13 +18,24 @@ import (
 // (see DraftComputed), so this is treated as a draft-authoring bug, not tolerated per-OS behavior.
 const windowsInvalidPathChars = `<>:"|?*`
 
-// validDraftPath rejects a file path containing a character no real filesystem accepts, so a bad
-// draft fails clearly at write time instead of surfacing as a cryptic OS error.
+// validDraftPath rejects a file path containing a character no real filesystem accepts, or one
+// that escapes outputDir, so a bad draft fails clearly at write time instead of surfacing as a
+// cryptic OS error - or, worse, silently writing outside outputDir. A draft's Files come straight
+// from a provider's tool call or an agent-supplied --draft JSON, neither of which is trusted input,
+// so this mirrors the same escape check render.checkContained applies to a jig.yaml's own file
+// targets at render time.
 func validDraftPath(p string) error {
 	if i := strings.IndexAny(p, windowsInvalidPathChars); i >= 0 {
 		return fmt.Errorf("file path %q contains %q, which cannot appear in a filename - express "+
 			"any non-canonical casing via a `computed` variable and reference it with plain "+
 			"\"{{ .Name }}\" syntax instead of a piped filter in the path", p, string(p[i]))
+	}
+	if filepath.IsAbs(p) || strings.HasPrefix(filepath.ToSlash(p), "/") {
+		return fmt.Errorf("file path %q is absolute; draft file paths must be relative to --output", p)
+	}
+	clean := path.Clean(filepath.ToSlash(p))
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("file path %q escapes the output directory", p)
 	}
 	return nil
 }
