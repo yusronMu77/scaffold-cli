@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"scaffold-engine-go/internal/jig"
+	"scaffold-engine-go/internal/render"
 )
 
 // windowsInvalidPathChars are the characters Windows forbids in a filename, beyond the path
@@ -18,13 +19,14 @@ import (
 // (see DraftComputed), so this is treated as a draft-authoring bug, not tolerated per-OS behavior.
 const windowsInvalidPathChars = `<>:"|?*`
 
-// validDraftPath rejects a file path containing a character no real filesystem accepts, or one
-// that escapes outputDir, so a bad draft fails clearly at write time instead of surfacing as a
-// cryptic OS error - or, worse, silently writing outside outputDir. A draft's Files come straight
-// from a provider's tool call or an agent-supplied --draft JSON, neither of which is trusted input,
-// so this mirrors the same escape check render.checkContained applies to a jig.yaml's own file
-// targets at render time.
+// validDraftPath rejects a file path that no filesystem accepts, that escapes outputDir, or that
+// collides with a name the engine reserves. A draft's Files come straight from a provider's tool
+// call or an agent-supplied --draft JSON, neither of which is trusted input, so this mirrors the
+// same escape check render.checkContained applies to a jig.yaml's own file targets at render time.
 func validDraftPath(p string) error {
+	if strings.TrimSpace(p) == "" {
+		return fmt.Errorf("a draft file has an empty path")
+	}
 	if i := strings.IndexAny(p, windowsInvalidPathChars); i >= 0 {
 		return fmt.Errorf("file path %q contains %q, which cannot appear in a filename - express "+
 			"any non-canonical casing via a `computed` variable and reference it with plain "+
@@ -37,13 +39,69 @@ func validDraftPath(p string) error {
 	if clean == ".." || strings.HasPrefix(clean, "../") {
 		return fmt.Errorf("file path %q escapes the output directory", p)
 	}
+	if clean == "." {
+		return fmt.Errorf("file path %q names the output directory itself, not a file", p)
+	}
+
+	// jig.yaml is the engine's contract with the template author: written at the root it would
+	// clobber the manifest this draft just generated, and in a subfolder it would turn that folder
+	// into a discovery node whose files `create` then never renders.
+	base := path.Base(clean)
+	if base == jig.FileName {
+		return fmt.Errorf("file path %q is reserved: %s is the manifest this draft generates, so a "+
+			"template file cannot be called that", p, jig.FileName)
+	}
+	if jig.IsPartial(base) {
+		return fmt.Errorf("file path %q is reserved: %s*%s holds `define` blocks for other templates "+
+			"to include and is never emitted as output, so a file that should be generated cannot "+
+			"be called that", p, jig.PartialPrefix, jig.PartialSuffix)
+	}
+	return nil
+}
+
+// validDraftNames rejects a draft whose variables would be unusable once the template is live: a
+// variable whose CLI flag is one of the reserved values-file keys is accepted by jig.Load but
+// rejected later by every `scaffold create`, and a computed entry sharing a variable's name
+// silently overwrites it at render time.
+func validDraftNames(d *Draft) error {
+	seen := map[string]bool{}
+	for _, v := range d.Variables {
+		flag := render.VariableFlagName(jig.Variable{Name: v.Name, Flag: ""})
+		if reason, reserved := jig.ReservedValueKeys[flag]; reserved {
+			return fmt.Errorf("variable %q maps to the flag --%s, which is reserved (%s) and would "+
+				"make every later `scaffold create` fail - name it something more specific, "+
+				"e.g. EntityName or ClassName", v.Name, flag, reason)
+		}
+		seen[v.Name] = true
+	}
+	for _, c := range d.Computed {
+		if seen[c.Name] {
+			return fmt.Errorf("computed %q has the same name as a variable, which would silently "+
+				"overwrite it at render time - give the computed entry its own name", c.Name)
+		}
+		seen[c.Name] = true
+	}
 	return nil
 }
 
 // WriteDraft writes a Draft as a jig.yaml plus its templated files under outputDir, then
 // self-validates by loading the jig.yaml back through jig.Load - the same strict decoder `create`
-// uses - so a broken draft is never reported as written successfully.
-func WriteDraft(outputDir string, d *Draft) error {
+// uses - so a broken draft is never reported as written successfully. A non-empty outputDir is
+// refused unless force is set, since a draft landing on top of an existing template would
+// overwrite work that cannot be recovered.
+func WriteDraft(outputDir string, d *Draft, force bool) error {
+	if err := validDraftNames(d); err != nil {
+		return err
+	}
+	for _, f := range d.Files {
+		if err := validDraftPath(f.Path); err != nil {
+			return err
+		}
+	}
+	if err := checkOutputDirEmpty(outputDir, force); err != nil {
+		return err
+	}
+
 	m := jig.Jig{
 		Name:        d.Name,
 		Description: d.Description,
@@ -56,10 +114,12 @@ func WriteDraft(outputDir string, d *Draft) error {
 	for _, c := range d.Computed {
 		m.Computed = append(m.Computed, jig.Computed{Name: c.Name, Value: c.Value})
 	}
-
+	// A `files:` entry is only needed for a file whose stored name differs from where it should
+	// land - e.g. .gitignore, stored as gitignore.tpl so git doesn't apply it to the templates
+	// repo itself.
 	for _, f := range d.Files {
-		if err := validDraftPath(f.Path); err != nil {
-			return err
+		if f.Target != "" {
+			m.Files = append(m.Files, jig.FileEntry{Path: f.Path, Target: f.Target})
 		}
 	}
 
@@ -88,6 +148,26 @@ func WriteDraft(outputDir string, d *Draft) error {
 
 	if _, err := jig.Load(jigPath); err != nil {
 		return fmt.Errorf("draft written but failed self-validation, fix before using it: %w", err)
+	}
+	return nil
+}
+
+// checkOutputDirEmpty refuses to write a draft into a directory that already holds something,
+// unless force is set - the same fail-then-opt-in shape `create` and `init` use.
+func checkOutputDirEmpty(outputDir string, force bool) error {
+	if force {
+		return nil
+	}
+	entries, err := os.ReadDir(outputDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", outputDir, err)
+	}
+	if len(entries) > 0 {
+		return fmt.Errorf("--output %s is not empty; a draft would overwrite what is already "+
+			"there. Point --output at a fresh directory, or pass --force to write anyway", outputDir)
 	}
 	return nil
 }

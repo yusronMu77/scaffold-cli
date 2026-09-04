@@ -91,7 +91,7 @@ func TestLearn_WritesValidDraftAndReportsIt(t *testing.T) {
 	cmd := newLearnCommand()
 	var buf strings.Builder
 	cmd.SetOut(&buf)
-	if err := runLearnWithClient(cmd, exampleDir, outDir, client); err != nil {
+	if err := runLearnWithClient(cmd, exampleDir, outDir, client, false); err != nil {
 		t.Fatalf("runLearnWithClient returned error: %v", err)
 	}
 

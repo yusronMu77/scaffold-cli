@@ -6,6 +6,7 @@ package learn
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,6 +38,7 @@ var (
 		"credentials": true, "credentials.json": true, "service-account.json": true,
 		"secrets.json": true, "secrets.yaml": true, "secrets.yml": true,
 		"kubeconfig": true, ".netrc": true, "htpasswd": true,
+		".env": true, ".envrc": true, ".pgpass": true, ".npmrc": true,
 	}
 	credentialFileExts = map[string]bool{
 		".pem": true, ".key": true, ".p12": true, ".pfx": true,
@@ -45,16 +47,22 @@ var (
 )
 
 // isCredentialFile reports whether name is an unambiguous credential store rather than part of the
-// pattern being learned.
+// pattern being learned. `.env` and friends are matched by prefix too, so `.env.local` and
+// `.env.production` are covered without listing every suffix anyone invents.
 func isCredentialFile(name string) bool {
 	lower := strings.ToLower(name)
-	return credentialFileNames[lower] || credentialFileExts[strings.ToLower(filepath.Ext(lower))]
+	if credentialFileNames[lower] || credentialFileExts[strings.ToLower(filepath.Ext(lower))] {
+		return true
+	}
+	return strings.HasPrefix(lower, ".env.")
 }
 
 // Scan walks dir and returns every text file in it, plus the relative paths it deliberately left
-// out (credential stores - see credentialFileNames), skipping dot-directories (.git and similar)
-// and anything that sniffs as binary. Files are returned in a stable, sorted order so the prompt
-// built from them is deterministic run to run.
+// out (credential stores and symlinks - both reported to the user, since the point is knowing what
+// did and didn't leave the machine). Dot-directories (.git and similar) and anything that sniffs
+// as binary are dropped silently; dot-files are kept, since .gitignore/.dockerignore are part of
+// the pattern being learned. Files come back sorted so the prompt built from them is deterministic
+// run to run.
 func Scan(dir string) ([]SourceFile, []string, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -82,11 +90,15 @@ func Scan(dir string) ([]SourceFile, []string, error) {
 			}
 			return nil
 		}
-		if len(d.Name()) > 0 && d.Name()[0] == '.' {
-			return nil
-		}
 		if isCredentialFile(d.Name()) {
 			skipped = append(skipped, filepath.ToSlash(rel))
+			return nil
+		}
+		// WalkDir doesn't follow symlinks but os.ReadFile does, so a link named like ordinary
+		// config would ship its target - possibly a credential outside the folder entirely - past
+		// the deny-list above, which only ever sees the link's own name.
+		if d.Type()&fs.ModeSymlink != 0 {
+			skipped = append(skipped, filepath.ToSlash(rel)+" (symlink)")
 			return nil
 		}
 

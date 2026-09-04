@@ -182,6 +182,10 @@ scaffold learn <path> --output=<dir> [--provider=anthropic|openai] [--model=...]
 scaffold learn <path> --output=<dir> --draft=<path|->   # already-reasoned draft, no provider call
 ```
 
+`--output` must be an empty (or not-yet-existing) directory; pass `--force` to write into one that
+already holds something. Credential files (`*.pem`, `id_rsa`, `.env`, `kubeconfig`, ...) and
+symlinks are never sent to a provider, and the ones skipped are listed before the call is made.
+
 Points at one already-written example folder (a real controller, a CDK stack, ...), calls an LLM
 **once** to separate invariant structure from variable names/paths/fields, and writes the result to
 `--output` as a draft `jig.yaml` plus templated files. `--output` is required — the draft is a

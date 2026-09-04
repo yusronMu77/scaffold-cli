@@ -28,6 +28,67 @@ func TestScan_SkipsHiddenDirsAndBinaryFiles(t *testing.T) {
 	}
 }
 
+// .gitignore and friends are part of the pattern being learned, so a dot-*file* is kept even
+// though a dot-*directory* is skipped. `.env` is the exception - it's a credential store.
+func TestScan_KeepsDotFilesButSkipsDotEnv(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "src/Widget.java", "class Widget {}")
+	write(t, dir, ".gitignore", "target/\n")
+	write(t, dir, ".dockerignore", "*.md\n")
+	write(t, dir, ".env", "API_KEY=sekrit\n")
+	write(t, dir, ".env.local", "API_KEY=also-sekrit\n")
+
+	files, skipped, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, f := range files {
+		got[f.Path] = true
+		if strings.Contains(f.Content, "sekrit") {
+			t.Fatalf("%s carries a credential into the prompt", f.Path)
+		}
+	}
+	for _, want := range []string{".gitignore", ".dockerignore", "src/Widget.java"} {
+		if !got[want] {
+			t.Errorf("expected %s to be kept, got %v", want, files)
+		}
+	}
+	if len(skipped) != 2 {
+		t.Errorf("expected both .env files reported as skipped, got %v", skipped)
+	}
+}
+
+// WalkDir doesn't follow symlinks but os.ReadFile does: without an explicit skip, a link named
+// like ordinary config ships its target - possibly a credential outside the folder entirely.
+func TestScan_SkipsSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "src/Widget.java", "class Widget {}")
+
+	secret := filepath.Join(t.TempDir(), "credentials")
+	if err := os.WriteFile(secret, []byte("aws_secret_access_key = sekrit\n"), 0o600); err != nil {
+		t.Fatalf("writing link target: %v", err)
+	}
+	link := filepath.Join(dir, "config.yaml")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Skipf("symlinks not creatable in this environment: %v", err)
+	}
+
+	files, skipped, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	for _, f := range files {
+		if strings.Contains(f.Content, "sekrit") {
+			t.Fatalf("%s followed a symlink and carried its target into the prompt", f.Path)
+		}
+	}
+	if len(skipped) != 1 || !strings.Contains(skipped[0], "config.yaml") {
+		t.Errorf("expected the symlink reported as skipped, got %v", skipped)
+	}
+}
+
 func TestScan_RejectsOversizedFile(t *testing.T) {
 	dir := t.TempDir()
 	big := strings.Repeat("x", perFileMaxBytes+1)

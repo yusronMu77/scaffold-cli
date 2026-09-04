@@ -37,6 +37,12 @@ type DraftComputed struct {
 type DraftFile struct {
 	Path    string
 	Content string
+
+	// Target is where Path should land in a generated project, when that differs from Path itself.
+	// Needed for a file whose real name would be acted on inside the templates repo - .gitignore is
+	// stored as gitignore.tpl so git doesn't apply it to the templates repo itself. Empty means the
+	// file lands exactly where Path says.
+	Target string
 }
 
 // Inferer separates invariant structure from variable names/paths/fields in one model call.

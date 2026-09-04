@@ -27,7 +27,7 @@ func TestWriteDraft_ValidDraftRoundTripsThroughJigLoad(t *testing.T) {
 		},
 	}
 
-	if err := WriteDraft(dir, d); err != nil {
+	if err := WriteDraft(dir, d, false); err != nil {
 		t.Fatalf("WriteDraft returned error: %v", err)
 	}
 
@@ -54,7 +54,7 @@ func TestWriteDraft_RejectsPipedPathFilter(t *testing.T) {
 			{Path: "routes/{{ .ClassName | kebabcase }}.txt", Content: "x"},
 		},
 	}
-	err := WriteDraft(dir, d)
+	err := WriteDraft(dir, d, false)
 	if err == nil || !strings.Contains(err.Error(), "cannot appear in a filename") {
 		t.Fatalf("expected a clear piped-path-filter error, got %v", err)
 	}
@@ -72,7 +72,7 @@ func TestWriteDraft_RejectsPathEscapingOutputDir(t *testing.T) {
 			{Path: "../../escaped.txt", Content: "x"},
 		},
 	}
-	if err := WriteDraft(dir, d); err == nil {
+	if err := WriteDraft(dir, d, false); err == nil {
 		t.Fatal("expected WriteDraft to reject a file path escaping the output directory")
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(filepath.Dir(dir)), "escaped.txt")); err == nil {
@@ -91,7 +91,7 @@ func TestWriteDraft_RejectsAbsolutePath(t *testing.T) {
 			{Path: abs, Content: "x"},
 		},
 	}
-	if err := WriteDraft(dir, d); err == nil {
+	if err := WriteDraft(dir, d, false); err == nil {
 		t.Fatal("expected WriteDraft to reject an absolute file path")
 	}
 }
@@ -105,8 +105,97 @@ func TestWriteDraft_SelfValidationCatchesBadDraft(t *testing.T) {
 		Variables: []DraftVariable{{Name: ""}},
 		Files:     []DraftFile{{Path: "a.txt", Content: "x"}},
 	}
-	if err := WriteDraft(dir, d); err == nil {
+	if err := WriteDraft(dir, d, false); err == nil {
 		t.Fatal("expected WriteDraft to surface the self-validation failure")
+	}
+}
+
+// A variable named `Name` maps to the flag --name, which jig reserves. jig.Load accepts it, so
+// without this check `learn` reports success and every later `scaffold create` fails instead.
+func TestWriteDraft_RejectsReservedVariableFlag(t *testing.T) {
+	for _, name := range []string{"Name", "Scaffold", "Template", "Data"} {
+		dir := t.TempDir()
+		d := &Draft{
+			Name:      "reserved",
+			Variables: []DraftVariable{{Name: name, Default: "x"}},
+			Files:     []DraftFile{{Path: "a.txt", Content: "x"}},
+		}
+		err := WriteDraft(dir, d, false)
+		if err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("expected variable %q to be rejected as reserved, got %v", name, err)
+		}
+	}
+}
+
+// ApplyComputed would silently overwrite the variable of the same name at render time, and
+// jig.Validate has no duplicate check of its own.
+func TestWriteDraft_RejectsComputedShadowingVariable(t *testing.T) {
+	dir := t.TempDir()
+	d := &Draft{
+		Name:      "shadowed",
+		Variables: []DraftVariable{{Name: "EntityName", Default: "Widget"}},
+		Computed:  []DraftComputed{{Name: "EntityName", Value: "{{ .EntityName | kebabcase }}"}},
+		Files:     []DraftFile{{Path: "a.txt", Content: "x"}},
+	}
+	if err := WriteDraft(dir, d, false); err == nil {
+		t.Fatal("expected a computed entry shadowing a variable to be rejected")
+	}
+}
+
+// jig.yaml at the root would clobber the manifest WriteDraft just generated; a `_*.tpl` file is
+// only ever read as shared template definitions, never emitted as output.
+func TestWriteDraft_RejectsReservedFileNames(t *testing.T) {
+	for _, p := range []string{"jig.yaml", "nested/jig.yaml", "_helpers.tpl", ""} {
+		dir := t.TempDir()
+		d := &Draft{
+			Name:  "reserved-path",
+			Files: []DraftFile{{Path: p, Content: "x"}},
+		}
+		if err := WriteDraft(dir, d, false); err == nil {
+			t.Fatalf("expected file path %q to be rejected", p)
+		}
+	}
+}
+
+// --output pointed at an existing template must not silently overwrite it, which is the whole
+// reason --output is mandatory in the first place.
+func TestWriteDraft_RefusesNonEmptyOutputWithoutForce(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "existing.txt"), []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("seeding output dir: %v", err)
+	}
+	d := &Draft{
+		Name:  "widget",
+		Files: []DraftFile{{Path: "a.txt", Content: "x"}},
+	}
+
+	err := WriteDraft(dir, d, false)
+	if err == nil || !strings.Contains(err.Error(), "not empty") {
+		t.Fatalf("expected a non-empty --output to be refused, got %v", err)
+	}
+	if err := WriteDraft(dir, d, true); err != nil {
+		t.Fatalf("--force should write anyway, got %v", err)
+	}
+}
+
+// A file stored under a safe name (gitignore.tpl) must land as its real name (.gitignore) via a
+// `files:` entry, so git doesn't apply it to the templates repo itself.
+func TestWriteDraft_TargetBecomesFilesEntry(t *testing.T) {
+	dir := t.TempDir()
+	d := &Draft{
+		Name:  "widget",
+		Files: []DraftFile{{Path: "gitignore.tpl", Content: "target/\n", Target: ".gitignore"}},
+	}
+	if err := WriteDraft(dir, d, false); err != nil {
+		t.Fatalf("WriteDraft returned error: %v", err)
+	}
+
+	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	if err != nil {
+		t.Fatalf("jig.Load failed: %v", err)
+	}
+	if len(m.Files) != 1 || m.Files[0].Path != "gitignore.tpl" || m.Files[0].Target != ".gitignore" {
+		t.Fatalf("expected a files: entry mapping gitignore.tpl -> .gitignore, got %+v", m.Files)
 	}
 }
 
@@ -124,7 +213,7 @@ func TestWriteDraft_ConsumableByRender(t *testing.T) {
 			{Path: "{{ .ClassName }}Controller.java", Content: "class {{ .ClassName }}Controller {}\n"},
 		},
 	}
-	if err := WriteDraft(dir, d); err != nil {
+	if err := WriteDraft(dir, d, false); err != nil {
 		t.Fatalf("WriteDraft returned error: %v", err)
 	}
 

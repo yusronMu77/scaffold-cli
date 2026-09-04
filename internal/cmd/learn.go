@@ -13,12 +13,12 @@ import (
 
 // learnFlags are the flags `learn` itself owns - it has no dimension/variable flags to resolve,
 // since it isn't rendering an existing template.
-var learnFlags = []string{"output", "provider", "model", "base-url", "draft"}
+var learnFlags = []string{"output", "provider", "model", "base-url", "draft", "force"}
 
 func newLearnCommand() *cobra.Command {
 	return &cobra.Command{
 		Use: "learn <path> --output=<dir> " +
-			"[--provider=anthropic|openai] [--model=...] [--base-url=...] [--draft=<path|->]",
+			"[--provider=anthropic|openai] [--model=...] [--base-url=...] [--draft=<path|->] [--force]",
 		Short: "Draft a jig.yaml + templated files from one existing example folder",
 		Long: "scaffold learn <path> --output=<dir>\n\n" +
 			"Scans the example folder at <path>, calls an LLM once to separate invariant\n" +
@@ -32,7 +32,9 @@ func newLearnCommand() *cobra.Command {
 			"An AI agent invoking this command is already an LLM - rather than pay for a second,\n" +
 			"separately-billed model call, it can do the invariant/variable separation itself and\n" +
 			"pass the result straight through with --draft=<path|->, skipping any provider call and\n" +
-			"any API key entirely.",
+			"any API key entirely.\n\n" +
+			"--output must be empty; pass --force to write into a directory that already holds\n" +
+			"something.",
 		DisableFlagParsing: true,
 		RunE:               runLearn,
 	}
@@ -57,18 +59,19 @@ func runLearn(cmd *cobra.Command, rawArgs []string) error {
 		if err != nil {
 			return err
 		}
-		return runLearnWithDraftJSON(cmd, learnArgs.outputDir, raw)
+		return runLearnWithDraftJSON(cmd, learnArgs.outputDir, raw, learnArgs.force)
 	}
 
 	client, err := learn.ResolveClient(learnArgs.provider, learnArgs.model, learnArgs.baseURL)
 	if err != nil {
 		return err
 	}
-	return runLearnWithClient(cmd, learnArgs.path, learnArgs.outputDir, client)
+	return runLearnWithClient(cmd, learnArgs.path, learnArgs.outputDir, client, learnArgs.force)
 }
 
 type learnArgs struct {
 	path, outputDir, provider, model, baseURL, draftPath string
+	force                                                bool
 }
 
 // parseLearnArgs validates learn's positional/flag shape, kept separate from provider resolution
@@ -85,6 +88,7 @@ func parseLearnArgs(args *parsedArgs) (learnArgs, error) {
 		model:     args.value("model"),
 		baseURL:   args.value("base-url"),
 		draftPath: args.value("draft"),
+		force:     args.value("force") == "true",
 	}
 
 	if err := args.requireAllFlagsConsumed(learnFlags); err != nil {
@@ -121,12 +125,12 @@ func readDraftInput(cmd *cobra.Command, path string) ([]byte, error) {
 
 // runLearnWithDraftJSON writes an already-reasoned draft (see --draft) with no provider call at
 // all - the caller (typically an AI agent) already did the invariant/variable separation itself.
-func runLearnWithDraftJSON(cmd *cobra.Command, outputDir string, raw []byte) error {
+func runLearnWithDraftJSON(cmd *cobra.Command, outputDir string, raw []byte, force bool) error {
 	draft, err := learn.ParseDraft(raw)
 	if err != nil {
 		return err
 	}
-	if err := learn.WriteDraft(outputDir, draft); err != nil {
+	if err := learn.WriteDraft(outputDir, draft, force); err != nil {
 		return err
 	}
 	reportDraft(cmd, outputDir, draft)
@@ -135,7 +139,7 @@ func runLearnWithDraftJSON(cmd *cobra.Command, outputDir string, raw []byte) err
 
 // runLearnWithClient does the actual scan/infer/write, taking an already-resolved Inferer so
 // tests can inject a fake one and never touch the network.
-func runLearnWithClient(cmd *cobra.Command, path, outputDir string, client learn.Inferer) error {
+func runLearnWithClient(cmd *cobra.Command, path, outputDir string, client learn.Inferer, force bool) error {
 	files, skipped, err := learn.Scan(path)
 	if err != nil {
 		return err
@@ -144,7 +148,7 @@ func runLearnWithClient(cmd *cobra.Command, path, outputDir string, client learn
 	// machine, and the call is what sends it.
 	if len(skipped) > 0 {
 		fmt.Fprintf(cmd.OutOrStdout(),
-			"Skipped %d credential file(s) - not sent to the provider:\n", len(skipped))
+			"Skipped %d credential file(s)/symlink(s) - not sent to the provider:\n", len(skipped))
 		for _, s := range skipped {
 			fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", s)
 		}
@@ -155,7 +159,7 @@ func runLearnWithClient(cmd *cobra.Command, path, outputDir string, client learn
 		return err
 	}
 
-	if err := learn.WriteDraft(outputDir, draft); err != nil {
+	if err := learn.WriteDraft(outputDir, draft, force); err != nil {
 		return err
 	}
 	reportDraft(cmd, outputDir, draft)

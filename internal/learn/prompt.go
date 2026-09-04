@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"scaffold-engine-go/internal/jig"
 )
 
 // toolName is the function/tool the model is forced to call, regardless of provider shape.
@@ -24,38 +26,51 @@ would differ for another instance of the same pattern).
 Rules for variables:
 - Declare exactly ONE variable per concept, named in its most natural canonical form as it appears
   in the example (e.g. a Java class name in PascalCase: "Order").
+- NEVER name a variable "Name", "Scaffold", "Template" or "Data" (in any casing that lowercases to
+  those). Those four are reserved by the engine, and a variable using one is accepted when the
+  draft is written but makes every later generation fail. Use a specific name instead:
+  "EntityName", "ClassName", "ServiceName", ...
 - Every OTHER casing of that same concept found in the example (kebab-case, camelCase, snake_case,
   UPPER_CASE, lower case, plural forms) must be expressed in the templated output as that one
   variable piped through a template filter, not as a second variable. Available filters:
   "kebabcase", "camelcase", "snakecase", "upper", "lower", "title". Example: if the variable is
-  Name = "Order" and the example also contains "order-controller" and "orderService", emit
-  "{{ .Name | kebabcase }}-controller" and "{{ .Name | camelcase }}Service" - the same syntax Go's
-  text/template plus Sprig already supports everywhere else in this engine.
+  EntityName = "Order" and the example also contains "order-controller" and "orderService", emit
+  "{{ .EntityName | kebabcase }}-controller" and "{{ .EntityName | camelcase }}Service" - the same
+  syntax Go's text/template plus Sprig already supports everywhere else in this engine.
 - A variable's "default" must be the literal value found in the example (so the draft, used
   unmodified, reproduces the example exactly).
 
 Rules for files:
 - Return every file that should be part of the template, each with:
   - "path": the file's path relative to the template root. This path IS the literal on-disk
-    filename/directory structure of the draft, and it may itself contain "{{ .Name }}" wherever
-    the example's real path varies by concept (e.g. "src/main/java/.../{{ .Name }}Controller.java").
-    Files that don't vary keep their exact original path.
-    IMPORTANT: a path may only reference a variable with PLAIN "{{ .Name }}" syntax, never a piped
-    filter like "{{ .Name | kebabcase }}" - Windows forbids the "|" character in filenames, so a
-    piped expression cannot be part of a physical path. If the path needs a casing other than a
-    variable's own canonical form, declare a "computed" entry instead (see below) and reference
-    the plain "{{ .ComputedName }}" in the path.
+    filename/directory structure of the draft, and it may itself contain "{{ .EntityName }}"
+    wherever the example's real path varies by concept (e.g.
+    "src/main/java/.../{{ .EntityName }}Controller.java"). Files that don't vary keep their exact
+    original path.
+    IMPORTANT: a path may only reference a variable with PLAIN "{{ .EntityName }}" syntax, never a
+    piped filter like "{{ .EntityName | kebabcase }}" - Windows forbids the "|" character in
+    filenames, so a piped expression cannot be part of a physical path. If the path needs a casing
+    other than a variable's own canonical form, declare a "computed" entry instead (see below) and
+    reference the plain "{{ .ComputedName }}" in the path.
   - "content": the file's content with every occurrence of a variable concept replaced by the
-    matching "{{ .Name }}" expression, piped through a filter when the casing differs
-    (e.g. "{{ .Name | kebabcase }}") - piped filters are fine in content, only paths forbid them.
-    Content that doesn't vary is copied verbatim.
+    matching "{{ .EntityName }}" expression, piped through a filter when the casing differs
+    (e.g. "{{ .EntityName | kebabcase }}") - piped filters are fine in content, only paths forbid
+    them. Content that doesn't vary is copied verbatim.
+  - "target": ONLY for a file whose real name would be acted on inside the templates repository
+    itself. ".gitignore" is the standard case: store it as "path": "gitignore.tpl" with
+    "target": ".gitignore", so git doesn't apply it to the templates repo. Same for ".dockerignore"
+    and similar. Every other file omits "target" entirely.
+- Two names are reserved and must never be used as a "path": "` + jig.FileName + `" (the manifest
+  this draft itself generates) and any file starting with "` + jig.PartialPrefix +
+	`" and ending with "` + jig.PartialSuffix + `" (those hold shared template definitions and are
+  never emitted as output).
 - Do not invent files that were not in the example, and do not omit files that should regenerate
   with the instance.
 
 Rules for computed variables (only needed when a *path*, not content, requires a non-canonical
 casing):
 - "computed" entries have a "name" (a new identifier, distinct from every variable name) and a
-  "value" (a template expression building on a variable, e.g. "{{ .Name | kebabcase }}").
+  "value" (a template expression building on a variable, e.g. "{{ .EntityName | kebabcase }}").
 - Reference a computed entry the same way as a variable: plain "{{ .ComputedName }}", in either a
   path or content.
 
@@ -135,6 +150,11 @@ func inputSchema() map[string]any {
 							"type":        "string",
 							"description": "File content with variable occurrences templated",
 						},
+						"target": map[string]any{
+							"type": "string",
+							"description": "Only when the file must be STORED under a different name " +
+								"than it lands as, e.g. path \"gitignore.tpl\" with target \".gitignore\"",
+						},
 					},
 					"required": []string{"path", "content"},
 				},
@@ -173,6 +193,7 @@ type rawDraft struct {
 	Files []struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
+		Target  string `json:"target"`
 	} `json:"files"`
 }
 
@@ -202,7 +223,7 @@ func ParseDraft(raw []byte) (*Draft, error) {
 		d.Computed = append(d.Computed, DraftComputed{Name: c.Name, Value: c.Value})
 	}
 	for _, f := range rd.Files {
-		d.Files = append(d.Files, DraftFile{Path: f.Path, Content: f.Content})
+		d.Files = append(d.Files, DraftFile{Path: f.Path, Content: f.Content, Target: f.Target})
 	}
 	return d, nil
 }
