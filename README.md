@@ -103,9 +103,9 @@ scaffolding_code: ../scaffold-templates
 
 ## Usage
 
-`scaffold-cli` has four commands: `init` to bootstrap a fresh templates root, `list` to browse
-what's available, `create` to generate a project, and `lint` to check that a templates repository
-is healthy.
+`scaffold-cli` has five commands: `init` to bootstrap a fresh templates root, `list` to browse
+what's available, `create` to generate a project, `lint` to check that a templates repository is
+healthy, and `learn` to draft a template from an existing example.
 
 ### `init` — bootstrap a fresh templates root
 
@@ -174,6 +174,34 @@ value with no `jig.yaml`, a template that fails to parse, a variable with no def
 Add `--build` to also run each combination's own `verify:` commands against a real scratch build
 (slower, but the only way to know the generated project actually builds). Exit code is non-zero on
 any failure, so it works as a CI gate.
+
+### `learn` — draft a template from an existing example
+
+```bash
+scaffold learn <path> --output=<dir> [--provider=anthropic|openai] [--model=...] [--base-url=...]
+```
+
+Points at one already-written example folder (a real controller, a CDK stack, ...), calls an LLM
+**once** to separate invariant structure from variable names/paths/fields, and writes the result to
+`--output` as a draft `jig.yaml` plus templated files. `--output` is required — the draft is a
+candidate, not yet wired into any templates repository, so it's on you to review it (and move it
+into place) before `create`/`list`/`lint` would ever see it. Regenerating afterward goes through the
+same deterministic `create` path as every other template — zero further AI calls per instance.
+
+`learn` is not tied to one LLM vendor. Set exactly one of these and it's picked automatically
+(`--provider` disambiguates if both happen to be set):
+
+| Env var              | Provider                                   |
+|----------------------|---------------------------------------------|
+| `ANTHROPIC_API_KEY`  | Anthropic (Messages API)                    |
+| `OPENAI_API_KEY`     | OpenAI-compatible Chat Completions API      |
+
+`--base-url` points the OpenAI-compatible provider at any endpoint that mimics the same shape
+(Groq, OpenRouter, a local Ollama server, ...) without any code changes. `--model` overrides the
+per-provider default.
+
+This makes real calls to whichever provider you configure, at that provider's usual cost — there's
+no local/offline mode.
 
 ## Creating a template
 
