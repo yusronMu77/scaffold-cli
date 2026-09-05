@@ -171,6 +171,7 @@ func WriteDraft(outputDir string, d *Draft, force bool) error {
 	m := jig.Jig{
 		Name:        d.Name,
 		Description: d.Description,
+		Candidate:   true,
 	}
 	for _, v := range d.Variables {
 		m.Variables = append(m.Variables, jig.Variable{

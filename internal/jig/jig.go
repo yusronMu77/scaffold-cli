@@ -254,6 +254,11 @@ type Jig struct {
 	// IncompatibleWith lists other flag:value selections this leaf/value can't be combined
 	// with, e.g. "protocol:rest-http".
 	IncompatibleWith []string `yaml:"incompatible_with,omitempty"`
+
+	// Candidate marks this leaf as a draft produced by `scaffold learn`, not yet reviewed and
+	// promoted - create/list/lint refuse to use it until `scaffold learn-promote` clears this
+	// flag.
+	Candidate bool `yaml:"candidate,omitempty"`
 }
 
 // DefaultValue returns the Values entry marked `default: true`, if any.

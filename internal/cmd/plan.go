@@ -103,6 +103,25 @@ func resolvePlan(args *parsedArgs, root, scaffold, template, name string) (*plan
 		}
 	}
 
+	// A draft `scaffold learn` produced is a candidate until explicitly promoted - refuse it here
+	// so create/list/lint all inherit the gate for free, with nothing to duplicate. Read straight
+	// from disk rather than trusting walk.Leaf: on the WalkCategoryChain path, walk.Leaf is a
+	// synthesized navigation jig (see resolveNode) that only carries the fields the walk itself
+	// needs (Name/Selector/Default/Values/Files/Dependencies/Variables) - Candidate, like Verify or
+	// Data, is a content field and is never copied onto it.
+	if walk.Leaf != nil {
+		leafOwn, err := jig.LoadOptional(filepath.Join(walk.LeafDir, jig.FileName))
+		if err != nil {
+			return nil, err
+		}
+		if leafOwn != nil && leafOwn.Candidate {
+			return nil, fmt.Errorf("%s is a candidate produced by `scaffold learn`, not yet "+
+				"reviewed/approved - run `scaffold learn-review` to check it, then "+
+				"`scaffold learn-promote %s` before using it with create/list/lint",
+				walk.LeafDir, walk.LeafDir)
+		}
+	}
+
 	// Sources in application order: scaffold, version, base dimension, then the template chain,
 	// then the optional overlays sorted by merge_priority.
 	p := &plan{
