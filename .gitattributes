@@ -1,0 +1,11 @@
+# Force LF regardless of a contributor's core.autocrlf: gofmt (and Go tooling generally) always
+# normalizes to LF, so a CRLF checkout makes `gofmt -l` flag nearly every file with no real
+# formatting drift. text=auto still lets git's own content sniffing skip genuine binaries; the
+# lines below are a belt-and-braces guarantee for the binary files already tracked here plus any
+# added later.
+* text=auto eol=lf
+
+*.gif binary
+*.png binary
+*.ico binary
+*.exe binary
