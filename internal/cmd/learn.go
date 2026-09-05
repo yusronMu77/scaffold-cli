@@ -13,12 +13,12 @@ import (
 
 // learnFlags are the flags `learn` itself owns - it has no dimension/variable flags to resolve,
 // since it isn't rendering an existing template.
-var learnFlags = []string{"output", "provider", "model", "base-url", "draft", "force"}
+var learnFlags = []string{"output", "provider", "model", "base-url", "response-format", "draft", "force"}
 
 func newLearnCommand() *cobra.Command {
 	return &cobra.Command{
-		Use: "learn <path> --output=<dir> " +
-			"[--provider=anthropic|openai] [--model=...] [--base-url=...] [--draft=<path|->] [--force]",
+		Use: "learn <path> --output=<dir> [--provider=anthropic|openai] [--model=...] " +
+			"[--base-url=...] [--response-format=tool|json_schema] [--draft=<path|->] [--force]",
 		Short: "Draft a jig.yaml + templated files from one existing example folder",
 		Long: "scaffold learn <path> --output=<dir>\n\n" +
 			"Scans the example folder at <path>, calls an LLM once to separate invariant\n" +
@@ -29,6 +29,10 @@ func newLearnCommand() *cobra.Command {
 			"Provider is chosen by --provider=anthropic|openai, or auto-detected from whichever of\n" +
 			"ANTHROPIC_API_KEY / OPENAI_API_KEY is set. --base-url points the openai provider at\n" +
 			"any compatible endpoint (Groq, OpenRouter, a local server, ...).\n\n" +
+			"--response-format picks how the openai provider asks for JSON back: \"tool\" (default)\n" +
+			"forces a tool call, as always; \"json_schema\" uses response_format instead, for a model\n" +
+			"that rejects forced tool_choice while still needing schema-valid JSON. Anthropic only\n" +
+			"supports forced tool use and rejects any other value.\n\n" +
 			"An AI agent invoking this command is already an LLM - rather than pay for a second,\n" +
 			"separately-billed model call, it can do the invariant/variable separation itself and\n" +
 			"pass the result straight through with --draft=<path|->, skipping any provider call and\n" +
@@ -68,7 +72,7 @@ func runLearn(cmd *cobra.Command, rawArgs []string) error {
 		return runLearnWithDraftJSON(cmd, learnArgs.outputDir, raw, learnArgs.force)
 	}
 
-	client, err := learn.ResolveClient(learnArgs.provider, learnArgs.model, learnArgs.baseURL)
+	client, err := learn.ResolveClient(learnArgs.provider, learnArgs.model, learnArgs.baseURL, learnArgs.responseFormat)
 	if err != nil {
 		return err
 	}
@@ -76,8 +80,8 @@ func runLearn(cmd *cobra.Command, rawArgs []string) error {
 }
 
 type learnArgs struct {
-	path, outputDir, provider, model, baseURL, draftPath string
-	force                                                bool
+	path, outputDir, provider, model, baseURL, responseFormat, draftPath string
+	force                                                                bool
 }
 
 // parseLearnArgs validates learn's positional/flag shape, kept separate from provider resolution
@@ -88,13 +92,14 @@ func parseLearnArgs(args *parsedArgs) (learnArgs, error) {
 			"learn takes exactly one positional argument: the example folder to learn from")
 	}
 	la := learnArgs{
-		path:      args.positional[0],
-		outputDir: args.value("output"),
-		provider:  args.value("provider"),
-		model:     args.value("model"),
-		baseURL:   args.value("base-url"),
-		draftPath: args.value("draft"),
-		force:     args.value("force") == "true",
+		path:           args.positional[0],
+		outputDir:      args.value("output"),
+		provider:       args.value("provider"),
+		model:          args.value("model"),
+		baseURL:        args.value("base-url"),
+		responseFormat: args.value("response-format"),
+		draftPath:      args.value("draft"),
+		force:          args.value("force") == "true",
 	}
 
 	if err := args.requireAllFlagsConsumed(learnFlags); err != nil {
@@ -105,10 +110,10 @@ func parseLearnArgs(args *parsedArgs) (learnArgs, error) {
 			"--output is required for learn: a draft must not land somewhere create/list/lint " +
 				"would discover it before it has been reviewed")
 	}
-	if la.draftPath != "" && (la.provider != "" || la.model != "" || la.baseURL != "") {
+	if la.draftPath != "" && (la.provider != "" || la.model != "" || la.baseURL != "" || la.responseFormat != "") {
 		return learnArgs{}, fmt.Errorf(
-			"--draft supplies an already-reasoned draft directly, so --provider/--model/--base-url " +
-				"(which pick a provider to call) don't apply together with it")
+			"--draft supplies an already-reasoned draft directly, so --provider/--model/--base-url/" +
+				"--response-format (which pick a provider to call) don't apply together with it")
 	}
 	return la, nil
 }

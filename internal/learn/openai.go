@@ -9,27 +9,33 @@ import (
 	"time"
 )
 
-// DefaultOpenAIModel is used when --model is not given for the OpenAI-shaped provider. Worth
-// reconfirming against the target endpoint's current model roster - this only needs to be a
-// reasonable default, since --model always overrides it.
-const DefaultOpenAIModel = "gpt-4o"
+// DefaultOpenAIModel is used when --model is not given for the OpenAI-shaped provider. Confirmed
+// against platform.openai.com/docs/models (2026-09-05): the current lineup is GPT-5.6
+// Sol/Terra/Luna (flagship/balanced/cost-optimized). Terra is picked for tier parity with
+// DefaultAnthropicModel ("claude-sonnet-5", Anthropic's own balanced tier, not its top-of-line
+// Opus) - a default nobody explicitly chose shouldn't land on the most expensive tier. Worth
+// reconfirming whenever the roster is next revisited; --model always overrides it regardless.
+const DefaultOpenAIModel = "gpt-5.6-terra"
 
 // DefaultOpenAIBaseURL is OpenAI's own endpoint. --base-url points this at any other
 // OpenAI-compatible endpoint (Groq, OpenRouter, a local Ollama server, ...) with no new code.
 const DefaultOpenAIBaseURL = "https://api.openai.com/v1"
 
-// openAIClient implements Inferer against the OpenAI Chat Completions shape (no SDK): a forced
-// tool_choice makes the response carry exactly one tool_calls entry, whose arguments are a JSON
-// string (unlike Anthropic's already-parsed object) that still needs its own json.Unmarshal.
+// openAIClient implements Inferer against the OpenAI Chat Completions shape (no SDK). Two response
+// mechanisms are supported (see responseFormat): a forced tool_choice, whose tool_calls arguments
+// are a JSON string (unlike Anthropic's already-parsed object) needing its own json.Unmarshal; or
+// response_format: json_schema, whose JSON comes back as the message's plain content string.
 type openAIClient struct {
-	apiKey  string
-	baseURL string
-	model   string
-	http    *http.Client
+	apiKey         string
+	baseURL        string
+	model          string
+	responseFormat string
+	http           *http.Client
 }
 
-// NewOpenAIClient builds an Inferer for the OpenAI-compatible Chat Completions API.
-func NewOpenAIClient(apiKey, baseURL, model string) Inferer {
+// NewOpenAIClient builds an Inferer for the OpenAI-compatible Chat Completions API. responseFormat
+// is one of ResponseFormatTool/ResponseFormatJSONSchema; empty behaves as ResponseFormatTool.
+func NewOpenAIClient(apiKey, baseURL, model, responseFormat string) Inferer {
 	if baseURL == "" {
 		baseURL = DefaultOpenAIBaseURL
 	}
@@ -37,18 +43,37 @@ func NewOpenAIClient(apiKey, baseURL, model string) Inferer {
 		model = DefaultOpenAIModel
 	}
 	return &openAIClient{
-		apiKey:  apiKey,
-		baseURL: strings.TrimRight(baseURL, "/"),
-		model:   model,
-		http:    &http.Client{Timeout: 180 * time.Second},
+		apiKey:         apiKey,
+		baseURL:        strings.TrimRight(baseURL, "/"),
+		model:          model,
+		responseFormat: responseFormat,
+		http:           &http.Client{Timeout: 180 * time.Second},
 	}
 }
 
 type openAIRequest struct {
-	Model      string           `json:"model"`
-	Messages   []openAIMessage  `json:"messages"`
-	Tools      []openAITool     `json:"tools"`
-	ToolChoice openAIToolChoice `json:"tool_choice"`
+	Model          string                `json:"model"`
+	Messages       []openAIMessage       `json:"messages"`
+	Tools          []openAITool          `json:"tools,omitempty"`
+	ToolChoice     *openAIToolChoice     `json:"tool_choice,omitempty"`
+	ResponseFormat *openAIResponseFormat `json:"response_format,omitempty"`
+}
+
+// openAIResponseFormat asks for response_format: json_schema instead of a forced tool call - the
+// alternative mechanism for a model that rejects forced tool_choice while still needing
+// schema-valid JSON back. strict is deliberately false: inputSchema() (shared with the Anthropic
+// tool schema) has genuinely optional fields, and strict mode requires every property listed as
+// required with additionalProperties:false everywhere - reshaping it would touch the Anthropic
+// path too for a benefit this mode alone doesn't need.
+type openAIResponseFormat struct {
+	Type       string                  `json:"type"`
+	JSONSchema *openAIJSONSchemaFormat `json:"json_schema"`
+}
+
+type openAIJSONSchemaFormat struct {
+	Name   string         `json:"name"`
+	Schema map[string]any `json:"schema"`
+	Strict bool           `json:"strict"`
 }
 
 type openAIMessage struct {
@@ -79,6 +104,7 @@ type openAIToolChoiceFunction struct {
 type openAIResponse struct {
 	Choices []struct {
 		Message struct {
+			Content   string `json:"content"`
 			ToolCalls []struct {
 				Function struct {
 					Name      string `json:"name"`
@@ -101,15 +127,26 @@ func (c *openAIClient) Infer(ctx context.Context, files []SourceFile) (*Draft, e
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: buildUserContent(files)},
 		},
-		Tools: []openAITool{{
+	}
+	if c.responseFormat == ResponseFormatJSONSchema {
+		reqBody.ResponseFormat = &openAIResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &openAIJSONSchemaFormat{
+				Name:   toolName,
+				Schema: inputSchema(),
+				Strict: false,
+			},
+		}
+	} else {
+		reqBody.Tools = []openAITool{{
 			Type: "function",
 			Function: openAIToolFunction{
 				Name:        toolName,
 				Description: "Emit the learned template as invariant/variable structure.",
 				Parameters:  inputSchema(),
 			},
-		}},
-		ToolChoice: openAIToolChoice{Type: "function", Function: openAIToolChoiceFunction{Name: toolName}},
+		}}
+		reqBody.ToolChoice = &openAIToolChoice{Type: "function", Function: openAIToolChoiceFunction{Name: toolName}}
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -136,19 +173,27 @@ func (c *openAIClient) Infer(ctx context.Context, files []SourceFile) (*Draft, e
 		return nil, fmt.Errorf("openai-compatible API returned status %d: %s", status, respBody)
 	}
 
-	if len(parsed.Choices) == 0 || len(parsed.Choices[0].Message.ToolCalls) == 0 {
-		// A response truncated at the endpoint's own output limit is still HTTP 200 and carries no
-		// usable tool call, so say so instead of reporting a missing tool call with no cause.
-		if len(parsed.Choices) > 0 && parsed.Choices[0].FinishReason == "length" {
-			return nil, fmt.Errorf("the endpoint hit its output limit before finishing the draft " +
-				"(finish_reason=length) - the example folder is too large to emit as one template; " +
-				"trim it to just the pattern itself")
-		}
-		return nil, fmt.Errorf("openai-compatible response did not include a %s tool call", toolName)
+	if len(parsed.Choices) == 0 {
+		return nil, fmt.Errorf("openai-compatible response carried no choices")
 	}
 	if parsed.Choices[0].FinishReason == "length" {
-		return nil, fmt.Errorf("the endpoint hit its output limit mid-draft (finish_reason=length), " +
-			"so the tool call is cut off - trim the example folder to just the pattern itself")
+		// A response truncated at the endpoint's own output limit is still HTTP 200, in either
+		// response mode, so say so instead of reporting a missing/empty result with no cause.
+		return nil, fmt.Errorf("the endpoint hit its output limit before finishing the draft " +
+			"(finish_reason=length) - the example folder is too large to emit as one template; " +
+			"trim it to just the pattern itself")
+	}
+
+	if c.responseFormat == ResponseFormatJSONSchema {
+		content := parsed.Choices[0].Message.Content
+		if content == "" {
+			return nil, fmt.Errorf("openai-compatible response (response_format=json_schema) carried no content")
+		}
+		return ParseDraft([]byte(content))
+	}
+
+	if len(parsed.Choices[0].Message.ToolCalls) == 0 {
+		return nil, fmt.Errorf("openai-compatible response did not include a %s tool call", toolName)
 	}
 	call := parsed.Choices[0].Message.ToolCalls[0]
 	if call.Function.Name != toolName {
