@@ -70,6 +70,100 @@ func TestPromote_NonCandidateJigIsRejected(t *testing.T) {
 	}
 }
 
+// The comment most likely to matter is one attached directly to the line being removed - a
+// reviewer's own trailing note on `candidate: true` itself, e.g. recording who approved it.
+// yaml.v3 attaches a same-line comment to the value node it follows, so naively splicing out the
+// candidate key/value pair would silently delete this along with the flag.
+func TestPromote_PreservesInlineCommentOnCandidateLine(t *testing.T) {
+	dir := t.TempDir()
+	raw := "name: widget\n" +
+		"candidate: true # reviewed by alice, looks correct\n" +
+		"files:\n" +
+		"  - path: Widget.java\n"
+	if err := os.WriteFile(filepath.Join(dir, jig.FileName), []byte(raw), 0o644); err != nil {
+		t.Fatalf("writing jig.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Widget.java"), []byte("class Widget {}\n"), 0o644); err != nil {
+		t.Fatalf("writing Widget.java: %v", err)
+	}
+
+	if err := Promote(dir); err != nil {
+		t.Fatalf("Promote returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, jig.FileName))
+	if err != nil {
+		t.Fatalf("reading promoted jig.yaml: %v", err)
+	}
+	if !strings.Contains(string(got), "reviewed by alice, looks correct") {
+		t.Errorf("expected the inline comment on the candidate line to survive promotion, got:\n%s", got)
+	}
+	if strings.Contains(string(got), "candidate") {
+		t.Errorf("expected the candidate key to be removed, got:\n%s", got)
+	}
+}
+
+// Same risk, different placement: a standalone comment on the line immediately above
+// `candidate: true` - yaml.v3 attaches this as the candidate key's HeadComment, which would also
+// be deleted by a naive splice.
+func TestPromote_PreservesCommentAboveCandidateLine(t *testing.T) {
+	dir := t.TempDir()
+	raw := "name: widget\n" +
+		"# reviewed - about to promote\n" +
+		"candidate: true\n" +
+		"files:\n" +
+		"  - path: Widget.java\n"
+	if err := os.WriteFile(filepath.Join(dir, jig.FileName), []byte(raw), 0o644); err != nil {
+		t.Fatalf("writing jig.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Widget.java"), []byte("class Widget {}\n"), 0o644); err != nil {
+		t.Fatalf("writing Widget.java: %v", err)
+	}
+
+	if err := Promote(dir); err != nil {
+		t.Fatalf("Promote returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, jig.FileName))
+	if err != nil {
+		t.Fatalf("reading promoted jig.yaml: %v", err)
+	}
+	if !strings.Contains(string(got), "reviewed - about to promote") {
+		t.Errorf("expected the comment above the candidate line to survive promotion, got:\n%s", got)
+	}
+	if strings.Contains(string(got), "candidate") {
+		t.Errorf("expected the candidate key to be removed, got:\n%s", got)
+	}
+}
+
+// candidate: true as the FIRST key has no preceding sibling to carry its comment onto - it must
+// fall back to the document's own head comment instead.
+func TestPromote_PreservesCommentWhenCandidateIsFirstKey(t *testing.T) {
+	dir := t.TempDir()
+	raw := "candidate: true # reviewed by bob\n" +
+		"name: widget\n" +
+		"files:\n" +
+		"  - path: Widget.java\n"
+	if err := os.WriteFile(filepath.Join(dir, jig.FileName), []byte(raw), 0o644); err != nil {
+		t.Fatalf("writing jig.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Widget.java"), []byte("class Widget {}\n"), 0o644); err != nil {
+		t.Fatalf("writing Widget.java: %v", err)
+	}
+
+	if err := Promote(dir); err != nil {
+		t.Fatalf("Promote returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, jig.FileName))
+	if err != nil {
+		t.Fatalf("reading promoted jig.yaml: %v", err)
+	}
+	if !strings.Contains(string(got), "reviewed by bob") {
+		t.Errorf("expected the comment to survive even with candidate as the first key, got:\n%s", got)
+	}
+}
+
 // The whole point of editing jig.yaml as a yaml.Node instead of re-marshalling a struct: a
 // developer's own comment, added while hand-reviewing the draft, must survive promotion.
 func TestPromote_PreservesHandWrittenComment(t *testing.T) {

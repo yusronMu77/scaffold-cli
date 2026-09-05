@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -48,6 +49,7 @@ func Promote(draftDir string) error {
 	removed := false
 	for i := 0; i+1 < len(mapping.Content); i += 2 {
 		if mapping.Content[i].Value == candidateKey {
+			transplantComments(&doc, mapping, i)
 			mapping.Content = append(mapping.Content[:i], mapping.Content[i+2:]...)
 			removed = true
 			break
@@ -70,4 +72,39 @@ func Promote(draftDir string) error {
 		return fmt.Errorf("promoted but failed self-validation, fix before using it: %w", err)
 	}
 	return nil
+}
+
+// transplantComments moves any comment attached to the candidate key/value pair at index i onto
+// a neighboring node before that pair is spliced out. A reviewer's note is exactly as likely to
+// land on or directly above the `candidate:` line itself as anywhere else in the file - that's
+// the line being reviewed - and yaml.v3 attaches a same-line or immediately-preceding comment to
+// the node it annotates, so removing the pair outright would silently delete the very comment a
+// human left while approving it.
+func transplantComments(doc *yaml.Node, mapping *yaml.Node, i int) {
+	key, val := mapping.Content[i], mapping.Content[i+1]
+	var parts []string
+	for _, c := range []string{key.HeadComment, key.LineComment, val.LineComment, val.FootComment} {
+		if c != "" {
+			parts = append(parts, c)
+		}
+	}
+	if len(parts) == 0 {
+		return
+	}
+	combined := strings.Join(parts, "\n")
+
+	if i > 0 {
+		prev := mapping.Content[i-1]
+		if prev.FootComment != "" {
+			prev.FootComment += "\n" + combined
+		} else {
+			prev.FootComment = combined
+		}
+		return
+	}
+	if doc.HeadComment != "" {
+		doc.HeadComment += "\n" + combined
+	} else {
+		doc.HeadComment = combined
+	}
 }
