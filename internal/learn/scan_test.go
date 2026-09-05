@@ -126,6 +126,24 @@ func TestScan_RejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestScan_RejectsOversizedTotal(t *testing.T) {
+	dir := t.TempDir()
+	// Each file stays under perFileMaxBytes on its own; together they exceed totalMaxBytes, which
+	// must trip even though no single file would.
+	perFile := perFileMaxBytes / 2
+	write(t, dir, "a.txt", strings.Repeat("x", perFile))
+	write(t, dir, "b.txt", strings.Repeat("y", perFile))
+	write(t, dir, "c.txt", strings.Repeat("z", perFile))
+
+	_, _, err := Scan(dir)
+	if err == nil {
+		t.Fatal("expected an error for a folder over the total size limit")
+	}
+	if !strings.Contains(err.Error(), "total limit") {
+		t.Errorf("expected the error to name the total limit, got %v", err)
+	}
+}
+
 func TestScan_ErrorsOnEmptyFolder(t *testing.T) {
 	dir := t.TempDir()
 	if _, _, err := Scan(dir); err == nil {
