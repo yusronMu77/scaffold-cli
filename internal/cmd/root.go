@@ -27,6 +27,7 @@ func Execute() error {
 		SilenceErrors: true, // main() prints the error; without this cobra prints it too
 		SilenceUsage:  true, // a runtime failure is not a usage problem
 	}
-	root.AddCommand(newInitCommand(), newListCommand(), newCreateCommand(), newLintCommand(), newLearnCommand())
+	root.AddCommand(newInitCommand(), newListCommand(), newCreateCommand(), newLintCommand(),
+		newLearnCommand(), newLearnReviewCommand(), newLearnPromoteCommand())
 	return root.Execute()
 }
