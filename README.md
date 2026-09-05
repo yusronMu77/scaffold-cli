@@ -103,9 +103,9 @@ scaffolding_code: ../scaffold-templates
 
 ## Usage
 
-`scaffold-cli` has four commands: `init` to bootstrap a fresh templates root, `list` to browse
-what's available, `create` to generate a project, and `lint` to check that a templates repository
-is healthy.
+`scaffold-cli` has five commands: `init` to bootstrap a fresh templates root, `list` to browse
+what's available, `create` to generate a project, `lint` to check that a templates repository is
+healthy, and `learn` to draft a template from an existing example.
 
 ### `init` — bootstrap a fresh templates root
 
@@ -174,6 +174,46 @@ value with no `jig.yaml`, a template that fails to parse, a variable with no def
 Add `--build` to also run each combination's own `verify:` commands against a real scratch build
 (slower, but the only way to know the generated project actually builds). Exit code is non-zero on
 any failure, so it works as a CI gate.
+
+### `learn` — draft a template from an existing example
+
+```bash
+scaffold learn <path> --output=<dir> [--provider=anthropic|openai] [--model=...] [--base-url=...]
+scaffold learn <path> --output=<dir> --draft=<path|->   # already-reasoned draft, no provider call
+```
+
+`--output` must be an empty (or not-yet-existing) directory; pass `--force` to write into one that
+already holds something. Credential files (`*.pem`, `id_rsa`, `.env`, `kubeconfig`, ...) and
+symlinks are never sent to a provider, and the ones skipped are listed before the call is made.
+
+Points at one already-written example folder (a real controller, a CDK stack, ...), calls an LLM
+**once** to separate invariant structure from variable names/paths/fields, and writes the result to
+`--output` as a draft `jig.yaml` plus templated files. `--output` is required — the draft is a
+candidate, not yet wired into any templates repository, so it's on you to review it (and move it
+into place) before `create`/`list`/`lint` would ever see it. Regenerating afterward goes through the
+same deterministic `create` path as every other template — zero further AI calls per instance.
+
+`learn` is not tied to one LLM vendor. Set exactly one of these and it's picked automatically
+(`--provider` disambiguates if both happen to be set):
+
+| Env var              | Provider                                   |
+|----------------------|---------------------------------------------|
+| `ANTHROPIC_API_KEY`  | Anthropic (Messages API)                    |
+| `OPENAI_API_KEY`     | OpenAI-compatible Chat Completions API      |
+
+`--base-url` points the OpenAI-compatible provider at any endpoint that mimics the same shape
+(Groq, OpenRouter, a local Ollama server, ...) without any code changes. `--model` overrides the
+per-provider default.
+
+This makes a real call to whichever provider you configure, at that provider's usual cost.
+
+**`--draft=<path|->` skips the provider call entirely.** An AI agent invoking `learn` (e.g. via
+`scaffold-cli-skill`) is already an LLM — rather than pay for a second, separately-billed model
+call, it can do the invariant/variable separation itself and hand the result straight to `learn`
+as JSON (matching the same schema a provider call would produce — see `internal/learn/prompt.go`
+for the exact shape), either as a file path or `-` for stdin. No `ANTHROPIC_API_KEY`/
+`OPENAI_API_KEY`/`--provider`/`--model`/`--base-url` needed in this mode; combining `--draft` with
+any of those is rejected rather than silently ignored.
 
 ## Creating a template
 
