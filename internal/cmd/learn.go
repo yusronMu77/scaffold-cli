@@ -13,7 +13,10 @@ import (
 
 // learnFlags are the flags `learn` itself owns - it has no dimension/variable flags to resolve,
 // since it isn't rendering an existing template.
-var learnFlags = []string{"output", "provider", "model", "base-url", "response-format", "draft", "force"}
+var learnFlags = []string{
+	"output", "provider", "model", "base-url", "response-format", "draft", "force",
+	"scaffolding-code", "skip-match",
+}
 
 func newLearnCommand() *cobra.Command {
 	return &cobra.Command{
@@ -38,7 +41,12 @@ func newLearnCommand() *cobra.Command {
 			"pass the result straight through with --draft=<path|->, skipping any provider call and\n" +
 			"any API key entirely.\n\n" +
 			"--output must be empty; pass --force to write into a directory that already holds\n" +
-			"something.",
+			"something.\n\n" +
+			"Before scanning or inferring, `learn` checks whether an already-registered template's\n" +
+			"base shape (file names, directory structure) already matches the example folder - on a\n" +
+			"confident match it prints the `scaffold create ...` invocation that already covers it\n" +
+			"and exits, with no provider call and no draft written, rather than growing a duplicate\n" +
+			"template in the registry. Pass --skip-match to always learn a fresh draft regardless.",
 		DisableFlagParsing: true,
 		RunE:               runLearn,
 	}
@@ -64,6 +72,22 @@ func runLearn(cmd *cobra.Command, rawArgs []string) error {
 		return err
 	}
 
+	// Checked before scanning/inferring on EITHER path below (--draft included): the goal isn't
+	// only avoiding a billed call, it's avoiding a duplicate template in the registry, and an
+	// agent-supplied --draft can grow one just as easily as a provider call can.
+	if !learnArgs.skipMatch {
+		scaffoldingCodeRoot := resolveScaffoldingCodeRoot(learnArgs.scaffoldingCode)
+		if invocation, found := tryMatchExistingTemplate(scaffoldingCodeRoot, learnArgs.path); found {
+			fmt.Fprintln(cmd.OutOrStdout(),
+				"An existing template already appears to cover this pattern - skipping learn to "+
+					"avoid a duplicate (and, where applicable, a billed model call):")
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", invocation)
+			fmt.Fprintln(cmd.OutOrStdout(),
+				"\nIf this is genuinely a new pattern, rerun with --skip-match.")
+			return nil
+		}
+	}
+
 	if learnArgs.draftPath != "" {
 		raw, err := readDraftInput(cmd, learnArgs.draftPath)
 		if err != nil {
@@ -80,8 +104,8 @@ func runLearn(cmd *cobra.Command, rawArgs []string) error {
 }
 
 type learnArgs struct {
-	path, outputDir, provider, model, baseURL, responseFormat, draftPath string
-	force                                                                bool
+	path, outputDir, provider, model, baseURL, responseFormat, draftPath, scaffoldingCode string
+	force, skipMatch                                                                      bool
 }
 
 // parseLearnArgs validates learn's positional/flag shape, kept separate from provider resolution
@@ -92,14 +116,16 @@ func parseLearnArgs(args *parsedArgs) (learnArgs, error) {
 			"learn takes exactly one positional argument: the example folder to learn from")
 	}
 	la := learnArgs{
-		path:           args.positional[0],
-		outputDir:      args.value("output"),
-		provider:       args.value("provider"),
-		model:          args.value("model"),
-		baseURL:        args.value("base-url"),
-		responseFormat: args.value("response-format"),
-		draftPath:      args.value("draft"),
-		force:          args.value("force") == "true",
+		path:            args.positional[0],
+		outputDir:       args.value("output"),
+		provider:        args.value("provider"),
+		model:           args.value("model"),
+		baseURL:         args.value("base-url"),
+		responseFormat:  args.value("response-format"),
+		draftPath:       args.value("draft"),
+		scaffoldingCode: args.value("scaffolding-code"),
+		force:           args.value("force") == "true",
+		skipMatch:       args.value("skip-match") == "true",
 	}
 
 	if err := args.requireAllFlagsConsumed(learnFlags); err != nil {
