@@ -302,3 +302,48 @@ func TestWriteDraft_ConsumableByRender(t *testing.T) {
 		t.Errorf("expected substituted content, got %q", files[0].Content)
 	}
 }
+
+// A model that fails to templatize a detected secret - leaving the raw placeholder token in a
+// file's content instead of a {{ .Var }} reference - must be caught, not silently written.
+func TestWriteDraft_RejectsSurvivingRedactionPlaceholder(t *testing.T) {
+	dir := t.TempDir()
+	d := &Draft{
+		Name: "widget",
+		Variables: []DraftVariable{
+			{Name: "DbPassword", Required: true, Redacted: true},
+		},
+		Files: []DraftFile{
+			// Wrong: should reference {{ .DbPassword }}, not leave the raw token behind.
+			{Path: "app.properties", Content: "password=__SCAFFOLD_REDACTED_SECRET_1__\n"},
+		},
+	}
+	err := WriteDraft(dir, d, false)
+	if err == nil {
+		t.Fatal("expected a surviving raw redaction placeholder to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "redaction placeholder") {
+		t.Errorf("expected the error to name the redaction placeholder, got: %v", err)
+	}
+}
+
+// A `redacted: true` variable declaring a default anyway is rejected - jig.Validate's own rule,
+// exercised here through the same jig.Load self-validation WriteDraft already relies on.
+func TestWriteDraft_RejectsRedactedVariableWithDefault(t *testing.T) {
+	dir := t.TempDir()
+	d := &Draft{
+		Name: "widget",
+		Variables: []DraftVariable{
+			{Name: "DbPassword", Required: true, Redacted: true, Default: "changeit"},
+		},
+		Files: []DraftFile{
+			{Path: "app.properties", Content: "password={{ .DbPassword }}\n"},
+		},
+	}
+	err := WriteDraft(dir, d, false)
+	if err == nil {
+		t.Fatal("expected a redacted variable with a default to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "redacted") || !strings.Contains(err.Error(), "default") {
+		t.Errorf("expected the error to explain the redacted/default conflict, got: %v", err)
+	}
+}

@@ -34,6 +34,12 @@ type Variable struct {
 
 	Default  string `yaml:"default,omitempty"`
 	Required bool   `yaml:"required,omitempty"`
+
+	// Redacted marks a variable whose value was stripped by `scaffold learn` before a provider
+	// ever saw it - a real value was never available to fill in, so `create`/`list`/`lint` treat
+	// it exactly like any other required variable with no default, and only `scaffold
+	// learn-review`'s synthetic self-check treats it specially (see internal/learn/review.go).
+	Redacted bool `yaml:"redacted,omitempty"`
 }
 
 // LayoutRule rewrites a source path prefix into an output path prefix, and is inherited down the
@@ -362,6 +368,11 @@ func (m *Jig) Validate(path string) error {
 		if v.FromPositional != "" && v.FromPositional != "name" {
 			return fmt.Errorf("jig at %s: variable %q has from_positional: %q, but the only "+
 				"positional a variable can bind to is \"name\"", path, v.Name, v.FromPositional)
+		}
+		if v.Redacted && v.Default != "" {
+			return fmt.Errorf("jig at %s: variable %q is marked redacted but declares a default "+
+				"%q - a real value was never available to put there, so a redacted variable must "+
+				"have no default", path, v.Name, v.Default)
 		}
 	}
 	for i, f := range m.Files {
