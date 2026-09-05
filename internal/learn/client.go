@@ -51,3 +51,14 @@ type DraftFile struct {
 type Inferer interface {
 	Infer(ctx context.Context, files []SourceFile) (*Draft, error)
 }
+
+// ResponseFormat picks how the OpenAI-shaped client asks for the draft back as JSON. Anthropic has
+// only one mechanism (forced tool use) and rejects anything else - see ResolveClient.
+const (
+	// ResponseFormatTool forces a tool call via tool_choice, exactly as `learn` has always done.
+	ResponseFormatTool = "tool"
+	// ResponseFormatJSONSchema asks via response_format: json_schema instead, with no tools/
+	// tool_choice at all - the forward-looking mechanism for a model that rejects forced tool use
+	// while still needing schema-valid JSON back.
+	ResponseFormatJSONSchema = "json_schema"
+)

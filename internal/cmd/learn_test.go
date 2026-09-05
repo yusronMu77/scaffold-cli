@@ -174,6 +174,28 @@ func TestLearn_DraftRejectsProviderFlags(t *testing.T) {
 	}
 }
 
+func TestLearn_DraftRejectsResponseFormatFlag(t *testing.T) {
+	exampleDir := writeExampleFolder(t)
+	_, err := run(t, newLearnCommand, exampleDir, "--output="+t.TempDir(),
+		"--draft="+filepath.Join(t.TempDir(), "draft.json"), "--response-format=json_schema")
+	if err == nil || !strings.Contains(err.Error(), "don't apply together") {
+		t.Fatalf("expected --draft combined with --response-format to be rejected, got %v", err)
+	}
+}
+
+// No provider env var set: must fail resolving the provider, not fail on flag validation, so an
+// unrecognized --response-format value is still reachable and reported clearly.
+func TestLearn_UnknownResponseFormatRejected(t *testing.T) {
+	t.Setenv(learn.EnvOpenAIAPIKey, "sk-oai-test")
+	t.Setenv(learn.EnvAnthropicAPIKey, "")
+
+	exampleDir := writeExampleFolder(t)
+	_, err := run(t, newLearnCommand, exampleDir, "--output="+t.TempDir(), "--response-format=bogus")
+	if err == nil || !strings.Contains(err.Error(), "unknown --response-format") {
+		t.Fatalf("expected an unknown --response-format value to be rejected, got %v", err)
+	}
+}
+
 func TestLearn_DraftMalformedJSONSurfacesError(t *testing.T) {
 	exampleDir := writeExampleFolder(t)
 	outDir := filepath.Join(t.TempDir(), "draft")
