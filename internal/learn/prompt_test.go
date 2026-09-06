@@ -5,6 +5,32 @@ import (
 	"testing"
 )
 
+// #45: ParseDraft must carry a file's "raw" flag through to DraftFile.Raw, and default it to
+// false when omitted (the common case, and every draft written before this field existed).
+func TestParseDraft_RawFieldRoundTrips(t *testing.T) {
+	raw := `{
+		"name": "ansible-role",
+		"variables": [],
+		"files": [
+			{"path": "tasks/main.yml", "content": "{{ ansible_user }}\n", "raw": true},
+			{"path": "README.md", "content": "docs\n"}
+		]
+	}`
+	d, err := ParseDraft([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseDraft returned error: %v", err)
+	}
+	if len(d.Files) != 2 {
+		t.Fatalf("expected 2 files, got %+v", d.Files)
+	}
+	if !d.Files[0].Raw {
+		t.Errorf("expected tasks/main.yml to parse with Raw=true, got %+v", d.Files[0])
+	}
+	if d.Files[1].Raw {
+		t.Errorf("expected README.md (raw omitted) to default to Raw=false, got %+v", d.Files[1])
+	}
+}
+
 func TestIsMultiExample_TrueOnlyWhenAnyExampleIndexSet(t *testing.T) {
 	single := []SourceFile{{Path: "a.txt", Content: "x"}, {Path: "b.txt", Content: "y"}}
 	if isMultiExample(single) {

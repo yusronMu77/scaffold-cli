@@ -225,12 +225,19 @@ func WriteDraft(outputDir string, d *Draft, force bool) error {
 		m.Computed = append(m.Computed, jig.Computed{Name: c.Name, Value: c.Value})
 	}
 	// A `files:` entry is only needed for a file whose stored name differs from where it should
-	// land - e.g. .gitignore, stored as gitignore.tpl so git doesn't apply it to the templates
-	// repo itself.
+	// land (e.g. .gitignore, stored as gitignore.tpl so git doesn't apply it to the templates repo
+	// itself) or that must never be rendered at all (a file written in a foreign templating
+	// language - see DraftFile.Raw).
 	for _, f := range d.Files {
-		if f.Target != "" {
-			m.Files = append(m.Files, jig.FileEntry{Path: f.Path, Target: f.Target})
+		if f.Target == "" && !f.Raw {
+			continue
 		}
+		entry := jig.FileEntry{Path: f.Path, Target: f.Target}
+		if f.Raw {
+			noTemplate := false
+			entry.Template = &noTemplate
+		}
+		m.Files = append(m.Files, entry)
 	}
 
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {

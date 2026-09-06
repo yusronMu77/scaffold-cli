@@ -48,6 +48,12 @@ type DraftFile struct {
 	// stored as gitignore.tpl so git doesn't apply it to the templates repo itself. Empty means the
 	// file lands exactly where Path says.
 	Target string
+
+	// Raw marks a file whose content must be copied byte-for-byte, with zero rendering - for a file
+	// that is itself already written in a foreign templating language (Jinja/Ansible/ERB/
+	// Handlebars, ...) whose own {{ }}/{% %} must survive untouched, rather than being parsed as
+	// this engine's own template syntax. Maps to jig.FileEntry.Template=false (see WriteDraft).
+	Raw bool
 }
 
 // Inferer separates invariant structure from variable names/paths/fields in one model call.
