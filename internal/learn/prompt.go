@@ -60,6 +60,14 @@ Rules for files:
     itself. ".gitignore" is the standard case: store it as "path": "gitignore.tpl" with
     "target": ".gitignore", so git doesn't apply it to the templates repo. Same for ".dockerignore"
     and similar. Every other file omits "target" entirely.
+  - "raw": true ONLY for a file whose content already uses "{{ }}" or similar syntax for a
+    DIFFERENT templating language (Jinja, Ansible, ERB, Handlebars, ...) that must survive
+    byte-for-byte in the output, rather than being parsed as this engine's own template syntax.
+    When "raw" is true, "content" must be copied EXACTLY as it appeared in the example - no
+    variable substitution inside this file at all, since this engine's "{{ .Var }}" syntax cannot
+    coexist with the file's own foreign template syntax. "path" is unaffected and may still use
+    plain "{{ .EntityName }}" normally if the file's own name varies by instance. Every other file
+    omits "raw" entirely (the default, and by far the common case, is to template normally).
 - Two names are reserved and must never be used as a "path": "` + jig.FileName + `" (the manifest
   this draft itself generates) and any file starting with "` + jig.PartialPrefix +
 	`" and ending with "` + jig.PartialSuffix + `" (those hold shared template definitions and are
@@ -223,6 +231,16 @@ func inputSchema() map[string]any {
 							"description": "Only when the file must be STORED under a different name " +
 								"than it lands as, e.g. path \"gitignore.tpl\" with target \".gitignore\"",
 						},
+						"raw": map[string]any{
+							"type": "boolean",
+							"description": "true only when this file's own content already uses " +
+								"{{ }} or similar syntax for a DIFFERENT templating language (Jinja, " +
+								"Ansible, ERB, Handlebars, ...) that must survive byte-for-byte in the " +
+								"output. When true, content must be copied EXACTLY as it appeared in " +
+								"the example - no variable substitution inside this file at all, since " +
+								"this engine's own {{ .Var }} syntax cannot coexist with the file's own " +
+								"foreign template syntax",
+						},
 					},
 					"required": []string{"path", "content"},
 				},
@@ -272,6 +290,7 @@ type rawDraft struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 		Target  string `json:"target"`
+		Raw     bool   `json:"raw"`
 	} `json:"files"`
 }
 
@@ -302,7 +321,7 @@ func ParseDraft(raw []byte) (*Draft, error) {
 		d.Computed = append(d.Computed, DraftComputed{Name: c.Name, Value: c.Value})
 	}
 	for _, f := range rd.Files {
-		d.Files = append(d.Files, DraftFile{Path: f.Path, Content: f.Content, Target: f.Target})
+		d.Files = append(d.Files, DraftFile{Path: f.Path, Content: f.Content, Target: f.Target, Raw: f.Raw})
 	}
 	return d, nil
 }

@@ -264,6 +264,70 @@ func TestWriteDraft_TargetBecomesFilesEntry(t *testing.T) {
 	}
 }
 
+// #45: a file that is itself written in a foreign templating language (Jinja/Ansible/...) must be
+// marked template: false in the emitted jig.yaml, and its literal {{ }} content must survive
+// WriteDraft completely untouched - the whole point being that this engine never tries to parse
+// it at all.
+func TestWriteDraft_RawFileBecomesUntemplatedFilesEntry(t *testing.T) {
+	dir := t.TempDir()
+	rawContent := "- name: create user\n  user:\n    name: \"{{ ansible_user }}\"\n"
+	d := &Draft{
+		Name: "ansible-role",
+		Files: []DraftFile{
+			{Path: "tasks/main.yml", Content: rawContent, Raw: true},
+		},
+	}
+	if err := WriteDraft(dir, d, false); err != nil {
+		t.Fatalf("WriteDraft returned error: %v", err)
+	}
+
+	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	if err != nil {
+		t.Fatalf("jig.Load failed: %v", err)
+	}
+	if len(m.Files) != 1 || m.Files[0].Path != "tasks/main.yml" {
+		t.Fatalf("expected a files: entry for tasks/main.yml, got %+v", m.Files)
+	}
+	if m.Files[0].Template == nil || *m.Files[0].Template {
+		t.Fatalf("expected Template to be a non-nil pointer to false, got %+v", m.Files[0].Template)
+	}
+
+	written, err := os.ReadFile(filepath.Join(dir, "tasks", "main.yml"))
+	if err != nil {
+		t.Fatalf("reading written file: %v", err)
+	}
+	if string(written) != rawContent {
+		t.Fatalf("expected the raw file's content to survive byte-for-byte, got %q, want %q", written, rawContent)
+	}
+}
+
+// A raw file must not affect any other file in the same draft - a normal file alongside it still
+// gets no files: entry at all, same as before this feature existed.
+func TestWriteDraft_RawFileDoesNotAffectOtherFiles(t *testing.T) {
+	dir := t.TempDir()
+	d := &Draft{
+		Name: "mixed",
+		Variables: []DraftVariable{
+			{Name: "ClassName", Default: "Widget", Required: true},
+		},
+		Files: []DraftFile{
+			{Path: "tasks/main.yml", Content: "{{ ansible_user }}\n", Raw: true},
+			{Path: "{{ .ClassName }}.java", Content: "class {{ .ClassName }} {}\n"},
+		},
+	}
+	if err := WriteDraft(dir, d, false); err != nil {
+		t.Fatalf("WriteDraft returned error: %v", err)
+	}
+
+	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	if err != nil {
+		t.Fatalf("jig.Load failed: %v", err)
+	}
+	if len(m.Files) != 1 {
+		t.Fatalf("expected exactly one files: entry (for the raw file only), got %+v", m.Files)
+	}
+}
+
 // End-to-end proof that a draft is actually consumable, not just schema-valid: feed it through
 // the same render.RenderSource flow `create` uses, with a fabricated variable value standing in
 // for a real invocation.
