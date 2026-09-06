@@ -142,6 +142,19 @@ func validDraftNames(d *Draft) error {
 	return nil
 }
 
+// validNoRawRedactionPlaceholder rejects a draft file whose content still contains a raw
+// __SCAFFOLD_REDACTED_SECRET_<N>__ token - the model was told to turn each one into a declared
+// variable reference, and a survivor means it didn't. Writing it anyway would silently ship a dead
+// placeholder string into a real template rather than surfacing the miss.
+func validNoRawRedactionPlaceholder(f DraftFile) error {
+	if redactionPlaceholderPattern.MatchString(f.Content) {
+		return fmt.Errorf("file %q still contains a raw redaction placeholder - the model didn't "+
+			"declare a variable for a detected secret; review the draft manually before trusting it",
+			f.Path)
+	}
+	return nil
+}
+
 // WriteDraft writes a Draft as a jig.yaml plus its templated files under outputDir, then
 // self-validates by loading the jig.yaml back through jig.Load - the same strict decoder `create`
 // uses - so a broken draft is never reported as written successfully. A non-empty outputDir is
@@ -160,6 +173,9 @@ func WriteDraft(outputDir string, d *Draft, force bool) error {
 				return err
 			}
 		}
+		if err := validNoRawRedactionPlaceholder(f); err != nil {
+			return err
+		}
 	}
 	if err := validDraftLayout(d.Files); err != nil {
 		return err
@@ -176,6 +192,7 @@ func WriteDraft(outputDir string, d *Draft, force bool) error {
 	for _, v := range d.Variables {
 		m.Variables = append(m.Variables, jig.Variable{
 			Name: v.Name, Prompt: v.Prompt, Default: v.Default, Required: v.Required,
+			Redacted: v.Redacted,
 		})
 	}
 	for _, c := range d.Computed {

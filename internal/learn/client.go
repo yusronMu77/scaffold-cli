@@ -19,6 +19,11 @@ type DraftVariable struct {
 	Prompt   string
 	Default  string
 	Required bool
+
+	// Redacted mirrors jig.Variable.Redacted - the model sets this when a variable exists because
+	// a __SCAFFOLD_REDACTED_SECRET_<N>__ placeholder (see redact.go) appeared in the scanned
+	// content, not because a real value was ever visible to it.
+	Redacted bool
 }
 
 // DraftComputed mirrors jig.Computed: a variable derived from another via a template, e.g. a

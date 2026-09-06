@@ -61,9 +61,22 @@ func Review(draftDir, exampleDir string) (*ReviewResult, error) {
 		return nil, err
 	}
 
+	// A `redacted: true` variable has no default by design (jig.Validate rejects one that does) -
+	// its real value was never available even to the model, so it can never resolve from "its own
+	// defaults" the way every other variable does. Supplying a fixed probe value for exactly these
+	// lets ResolveVariables succeed instead of hard-failing on "missing required variable"; an
+	// ordinary hand-edited required-no-default variable unrelated to redaction still correctly
+	// fails below, same as before this existed.
+	probeFlags := map[string]string{}
+	for _, v := range m.Variables {
+		if v.Redacted {
+			probeFlags[render.VariableFlagName(v)] = RedactionProbeValue
+		}
+	}
+
 	base := render.EngineFacts("", "", "", "", nil, nil)
 	vars, err := render.ResolveVariables([]*jig.Jig{m}, render.VariableSource{
-		Flags: map[string]string{}, Base: base,
+		Flags: probeFlags, Base: base,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("resolving %s's own defaults: %w", jigPath, err)
@@ -81,14 +94,22 @@ func Review(draftDir, exampleDir string) (*ReviewResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Re-derive the example's own redacted shape - the same deterministic pass `learn` used
+	// originally - rather than comparing against the raw example: the draft never saw the real
+	// secret either, so comparing against it would always "mismatch" at that position. Numbered
+	// placeholders are then collapsed to one fixed marker, matching probeFlags above, so the
+	// comparison doesn't need to know which number corresponds to which declared variable - it
+	// only needs both sides to agree "something redacted belongs here", while still catching a
+	// genuine over/under-generalization anywhere else in the file.
+	redactedExample, _ := RedactSecrets(sourceFiles)
 
 	rendered := make(map[string]string, len(files))
 	for _, f := range files {
 		rendered[f.Path] = string(f.Content)
 	}
-	example := make(map[string]string, len(sourceFiles))
-	for _, f := range sourceFiles {
-		example[f.Path] = f.Content
+	example := make(map[string]string, len(redactedExample))
+	for _, f := range redactedExample {
+		example[f.Path] = redactionPlaceholderPattern.ReplaceAllString(f.Content, RedactionProbeValue)
 	}
 
 	result := &ReviewResult{}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -191,6 +193,16 @@ func runLearnWithClient(cmd *cobra.Command, path, outputDir string, client learn
 		}
 	}
 
+	// Value-level redaction runs on whatever Scan actually read, right before it ships anywhere -
+	// a whole-file skip (above) is safe and lossless for the template, but a secret embedded in an
+	// otherwise-legitimate file (a password in application.properties, a hardcoded token in a Java
+	// constant) needs this instead. Reported the same way skipped files are: what happened, never
+	// the actual values.
+	files, redactions := learn.RedactSecrets(files)
+	if len(redactions) > 0 {
+		printRedactionReport(cmd.OutOrStdout(), redactions)
+	}
+
 	draft, err := client.Infer(context.Background(), files)
 	if err != nil {
 		return err
@@ -205,6 +217,27 @@ func runLearnWithClient(cmd *cobra.Command, path, outputDir string, client learn
 
 // reportDraft prints the same summary regardless of how the draft was produced (a provider call
 // or an agent-supplied --draft).
+// printRedactionReport lists every value-level redaction by file and rule name, never the actual
+// secret text - the same "know what did and didn't leave the machine" principle the skipped-file
+// report above already follows.
+func printRedactionReport(out io.Writer, redactions []learn.Redaction) {
+	rulesByPath := map[string][]string{}
+	var paths []string
+	for _, r := range redactions {
+		if _, seen := rulesByPath[r.Path]; !seen {
+			paths = append(paths, r.Path)
+		}
+		rulesByPath[r.Path] = append(rulesByPath[r.Path], r.Rule)
+	}
+	sort.Strings(paths)
+
+	fmt.Fprintf(out, "Redacted %d value(s) in %d file(s) - not sent to the provider as written:\n",
+		len(redactions), len(paths))
+	for _, p := range paths {
+		fmt.Fprintf(out, "  %s (%s)\n", p, strings.Join(rulesByPath[p], ", "))
+	}
+}
+
 func reportDraft(cmd *cobra.Command, outputDir string, draft *learn.Draft) {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Learned %q into %s (draft - review before use)\n", draft.Name, outputDir)

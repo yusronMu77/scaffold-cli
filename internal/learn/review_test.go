@@ -138,3 +138,73 @@ func TestReview_ExtraFileIsFlagged(t *testing.T) {
 		t.Fatalf("expected Invented.java to be reported extra, got %+v", result)
 	}
 }
+
+// A `redacted: true` variable has no default by design, so Review must not hard-fail resolving it
+// (the v1 behavior, before this variable shape existed) - and once resolved via its probe value, a
+// draft that otherwise reproduces the example exactly must still review clean.
+func TestReview_RedactedVariableReviewsCleanWhenShapeMatches(t *testing.T) {
+	draftDir := t.TempDir()
+	d := &Draft{
+		Name: "widget-config",
+		Variables: []DraftVariable{
+			{Name: "ClassName", Default: "Widget", Required: true},
+			{Name: "DbPassword", Required: true, Redacted: true},
+		},
+		Files: []DraftFile{
+			{Path: "{{ .ClassName }}Config.java", Content: "class {{ .ClassName }}Config {\n" +
+				"  String password = \"{{ .DbPassword }}\";\n}\n"},
+		},
+	}
+	if err := WriteDraft(draftDir, d, false); err != nil {
+		t.Fatalf("WriteDraft returned error: %v", err)
+	}
+
+	exampleDir := writeExample(t, map[string]string{
+		"WidgetConfig.java": "class WidgetConfig {\n" +
+			"  String password = \"realSecretValue123456\";\n}\n",
+	})
+
+	result, err := Review(draftDir, exampleDir)
+	if err != nil {
+		t.Fatalf("Review returned error: %v", err)
+	}
+	if !result.Clean() {
+		t.Fatalf("expected a clean review once the redacted position is normalized, got %+v", result)
+	}
+}
+
+// The normalization for a redacted position must not blind Review to a genuine mismatch elsewhere
+// in the very same file.
+func TestReview_RedactedVariableStillCatchesMismatchElsewhereInFile(t *testing.T) {
+	draftDir := t.TempDir()
+	d := &Draft{
+		Name: "widget-config",
+		Variables: []DraftVariable{
+			{Name: "ClassName", Default: "Widget", Required: true},
+			{Name: "DbPassword", Required: true, Redacted: true},
+		},
+		Files: []DraftFile{
+			{Path: "{{ .ClassName }}Config.java", Content: "class {{ .ClassName }}Config {\n" +
+				"  String password = \"{{ .DbPassword }}\";\n}\n"},
+		},
+	}
+	if err := WriteDraft(draftDir, d, false); err != nil {
+		t.Fatalf("WriteDraft returned error: %v", err)
+	}
+
+	// The example has an extra field the draft never captured - a genuine under-generalization,
+	// unrelated to the redacted password position.
+	exampleDir := writeExample(t, map[string]string{
+		"WidgetConfig.java": "class WidgetConfig {\n" +
+			"  int extra = 42;\n" +
+			"  String password = \"realSecretValue123456\";\n}\n",
+	})
+
+	result, err := Review(draftDir, exampleDir)
+	if err != nil {
+		t.Fatalf("Review returned error: %v", err)
+	}
+	if result.Clean() {
+		t.Fatal("expected the extra field to still be caught as a mismatch, got a clean review")
+	}
+}
