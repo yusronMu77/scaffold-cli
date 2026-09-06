@@ -133,31 +133,51 @@ func applyValuesFile(args *parsedArgs) (scaffold, template, name string, err err
 	// The three positionals may be given either way; reserved keys are marked consumed so the
 	// unknown-flag check does not complain about them.
 	args.markConsumed(keyScaffold, keyTemplate, keyName, keyData)
-	positional := []string{keyScaffold, keyTemplate, keyName}
-	resolved := make([]string, 3)
-	for i, key := range positional {
-		switch {
-		case i < len(args.positional):
-			resolved[i] = args.positional[i]
-		default:
-			resolved[i] = args.flags[key]
-		}
-	}
-
 	if len(args.positional) > 3 {
 		return "", "", "", fmt.Errorf("too many positional arguments: %v", args.positional[3:])
 	}
 
-	var missing []string
-	for i, key := range positional {
-		if resolved[i] == "" {
-			if key == keyTemplate && versionIsLeaf(args, resolved[0]) {
-				// This scaffold-version has no `templates` dimension - it is itself the template,
-				// so <template> genuinely has nothing to name.
-				continue
-			}
-			missing = append(missing, key)
+	// scaffold is resolved first (positional[0] if given, else --scaffold), since versionIsLeaf
+	// needs it to decide how the REMAINING positionals map - a leaf version has no <template>
+	// slot at all, so a single remaining positional means <name>, not <template>.
+	scaffoldVal := args.flags[keyScaffold]
+	if len(args.positional) > 0 {
+		scaffoldVal = args.positional[0]
+	}
+	var rest []string
+	if len(args.positional) > 1 {
+		rest = args.positional[1:]
+	}
+	isLeaf := versionIsLeaf(args, scaffoldVal)
+
+	templateVal := args.flags[keyTemplate]
+	nameVal := args.flags[keyName]
+	switch {
+	case len(rest) >= 2:
+		templateVal, nameVal = rest[0], rest[1]
+	case len(rest) == 1:
+		// Unchanged for a normal scaffold: the one remaining positional is <template>, and <name>
+		// falls back to --name. For a leaf version (no templates dimension), it's <name> instead -
+		// matching `list`'s own "omit <template>" hint literally, instead of being misread as
+		// <template> and leaving <name> to fall back to an unset flag.
+		if isLeaf {
+			nameVal = rest[0]
+		} else {
+			templateVal = rest[0]
 		}
+	}
+
+	var missing []string
+	if scaffoldVal == "" {
+		missing = append(missing, keyScaffold)
+	}
+	if templateVal == "" && !isLeaf {
+		// This scaffold-version has no `templates` dimension - it is itself the template, so
+		// <template> genuinely has nothing to name.
+		missing = append(missing, keyTemplate)
+	}
+	if nameVal == "" {
+		missing = append(missing, keyName)
 	}
 	if len(missing) > 0 {
 		hint := "pass them positionally, or set them in a values file passed with -f"
@@ -169,7 +189,7 @@ func applyValuesFile(args *parsedArgs) (scaffold, template, name string, err err
 			strings.Join(missing, ", "), hint)
 	}
 
-	return resolved[0], resolved[1], resolved[2], nil
+	return scaffoldVal, templateVal, nameVal, nil
 }
 
 // versionIsLeaf reports whether the scaffold-version this invocation would resolve to has no

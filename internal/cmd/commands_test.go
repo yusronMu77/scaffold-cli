@@ -539,6 +539,35 @@ func TestCreate_RequiresThreePositionals(t *testing.T) {
 	}
 }
 
+// #46: a scaffold-version with no `templates` dimension (itself the template - the shape `list`
+// prints "omit <template>" for) must accept exactly 2 positionals (scaffold, name), matching that
+// hint literally, instead of misreading the 2nd positional as <template> and leaving <name> to
+// fall back to an unset --name flag.
+func TestCreate_LeafVersionAcceptsTwoPositionals(t *testing.T) {
+	root := buildLeafVersionScaffold(t)
+	_, outDir, err := createInto(t, root, "spring", "myapp", "--scaffold-version=legacy")
+	if err != nil {
+		t.Fatalf("expected a leaf version to accept (scaffold, name) with no <template>, got: %v", err)
+	}
+	if got := readGenerated(t, outDir, "myapp", filepath.Join("java", "HelloApplication.java")); !strings.Contains(got, "class HelloApplication") {
+		t.Errorf("expected the generated file, got:\n%s", got)
+	}
+}
+
+// The documented workaround (an unused positional standing in for <template>) must keep working
+// unchanged - this was already the only way to invoke a leaf version before the fix above, and per
+// the project's incremental-versioning rule a later fix must never break an earlier working path.
+func TestCreate_LeafVersionThreePositionalWorkaroundStillWorks(t *testing.T) {
+	root := buildLeafVersionScaffold(t)
+	_, outDir, err := createInto(t, root, "spring", "x", "myapp", "--scaffold-version=legacy")
+	if err != nil {
+		t.Fatalf("expected the 3-positional workaround to still succeed, got: %v", err)
+	}
+	if got := readGenerated(t, outDir, "myapp", filepath.Join("java", "HelloApplication.java")); !strings.Contains(got, "class HelloApplication") {
+		t.Errorf("expected the generated file, got:\n%s", got)
+	}
+}
+
 // A category with zero selector levels goes through the same command with no extra flags - and
 // here it is also a leaf that declares nothing of its own, so everything it produces is inherited.
 func TestCreate_ZeroSelectorCategoryInheritsEverything(t *testing.T) {
