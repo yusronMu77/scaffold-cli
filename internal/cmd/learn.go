@@ -35,8 +35,9 @@ func newLearnCommand() *cobra.Command {
 			"Given two or more paths (`scaffold learn <path1> <path2> ... --output=<dir>`), all\n" +
 			"instances are sent to the model in ONE call, which generalizes across them instead of\n" +
 			"just one - a variable's default is always drawn from <path1> specifically, so review it\n" +
-			"with `scaffold learn-review <draft-dir> <path1>` afterward, same as the single-example\n" +
-			"case. A single <path> behaves exactly as it always has.\n\n" +
+			"with `scaffold learn-review <draft-dir> <path1> <path2> ...` afterward, passing every\n" +
+			"example path in the same order (learn-review checks <path1> byte-for-byte and every\n" +
+			"later path structurally). A single <path> behaves exactly as it always has.\n\n" +
 			"Provider is chosen by --provider=anthropic|openai, or auto-detected from whichever of\n" +
 			"ANTHROPIC_API_KEY / OPENAI_API_KEY is set. --base-url points the openai provider at\n" +
 			"any compatible endpoint (Groq, OpenRouter, a local server, ...).\n\n" +
@@ -85,14 +86,22 @@ func runLearn(cmd *cobra.Command, rawArgs []string) error {
 	// agent-supplied --draft can grow one just as easily as a provider call can.
 	if !learnArgs.skipMatch {
 		scaffoldingCodeRoot := resolveScaffoldingCodeRoot(learnArgs.scaffoldingCode)
-		if invocation, found := tryMatchExistingTemplate(scaffoldingCodeRoot, learnArgs.paths[0]); found {
+		match := tryMatchExistingTemplate(scaffoldingCodeRoot, learnArgs.paths[0])
+		if match.confident {
 			fmt.Fprintln(cmd.OutOrStdout(),
 				"An existing template already appears to cover this pattern - skipping learn to "+
 					"avoid a duplicate (and, where applicable, a billed model call):")
-			fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", invocation)
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", match.invocation)
 			fmt.Fprintln(cmd.OutOrStdout(),
 				"\nIf this is genuinely a new pattern, rerun with --skip-match.")
 			return nil
+		}
+		if match.uncertain {
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"Note: an existing template has a similar shape (%.0f%% overlap) but wasn't "+
+					"confident enough to skip automatically - check it before promoting a new one:\n",
+				match.score*100)
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s\n\n", match.invocation)
 		}
 	}
 

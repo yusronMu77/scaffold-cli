@@ -11,16 +11,22 @@ import (
 
 func newLearnReviewCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "learn-review <draft-dir> <example-dir>",
-		Short: "Check a `scaffold learn` draft against its original example, with zero AI calls",
-		Long: "scaffold learn-review <draft-dir> <example-dir>\n\n" +
+		Use:   "learn-review <draft-dir> <example-dir> [<example-dir2> ...]",
+		Short: "Check a `scaffold learn` draft against its original example(s), with zero AI calls",
+		Long: "scaffold learn-review <draft-dir> <example-dir> [<example-dir2> ...]\n\n" +
 			"Renders the draft jig.yaml at <draft-dir> using only its own declared `default:`\n" +
 			"values - the same way `create` would - then compares the result byte-for-byte\n" +
-			"against <example-dir>, the folder `scaffold learn` originally scanned. A correct\n" +
-			"draft's own defaults must reproduce the example exactly, so any difference is a\n" +
-			"concrete, mechanically-detected sign of over- or under-generalization, with no\n" +
-			"second model call. Runnable by a human before hand-editing the draft, or by an AI\n" +
-			"agent as a self-review pass before promoting it.\n\n" +
+			"against <example-dir>, the first folder `scaffold learn` originally scanned. A\n" +
+			"correct draft's own defaults must reproduce that first example exactly, so any\n" +
+			"difference is a concrete, mechanically-detected sign of over- or under-\n" +
+			"generalization, with no second model call.\n\n" +
+			"Given a multi-example `learn` run, pass every example directory in the same order:\n" +
+			"only <example-dir> (the first) is checked byte-for-byte - a later example may\n" +
+			"legitimately have different values, since a variable's default is always drawn\n" +
+			"from the first example specifically - but each later <example-dirN> is still\n" +
+			"checked structurally: it must have the same set of files as the draft's render.\n\n" +
+			"Runnable by a human before hand-editing the draft, or by an AI agent as a\n" +
+			"self-review pass before promoting it.\n\n" +
 			"Exit code is non-zero if any issue is found.",
 		DisableFlagParsing: true,
 		RunE:               runLearnReview,
@@ -35,16 +41,17 @@ func runLearnReview(cmd *cobra.Command, rawArgs []string) error {
 	if args.help {
 		return cmd.Help()
 	}
-	if len(args.positional) != 2 {
-		return fmt.Errorf("learn-review takes exactly two positional arguments: the draft " +
-			"directory and the original example directory")
+	if len(args.positional) < 2 {
+		return fmt.Errorf("learn-review takes at least two positional arguments: the draft " +
+			"directory and the original example directory (plus any further example directories " +
+			"from a multi-example learn run)")
 	}
 	if err := args.requireAllFlagsConsumed(nil); err != nil {
 		return err
 	}
 
 	draftDir, exampleDir := args.positional[0], args.positional[1]
-	result, err := learn.Review(draftDir, exampleDir)
+	result, err := learn.Review(draftDir, exampleDir, args.positional[2:]...)
 	if err != nil {
 		return err
 	}
@@ -92,6 +99,16 @@ func printReviewResult(out io.Writer, draftDir, exampleDir string, r *learn.Revi
 			for _, l := range d.Rendered {
 				fmt.Fprintf(out, "      %s\n", l)
 			}
+		}
+	}
+	for _, e := range r.ExtraExamples {
+		fmt.Fprintf(out, "\nStructural mismatch against %s (content not compared - only "+
+			"%s is checked byte-for-byte):\n", e.Dir, exampleDir)
+		for _, p := range e.Missing {
+			fmt.Fprintf(out, "  missing: %s\n", p)
+		}
+		for _, p := range e.Extra {
+			fmt.Fprintf(out, "  extra:   %s\n", p)
 		}
 	}
 

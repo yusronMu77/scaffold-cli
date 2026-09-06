@@ -197,10 +197,11 @@ func TestLearnMatch_LeafVersionInvocationOmitsTemplateAndUsesVersionFlag(t *test
 		"java/MyController.java":  "class MyController {}\n",
 	})
 
-	invocation, found := tryMatchExistingTemplate(root, example)
-	if !found {
+	match := tryMatchExistingTemplate(root, example)
+	if !match.confident {
 		t.Fatal("expected the 2-file example to confidently match the 'legacy' leaf version")
 	}
+	invocation := match.invocation
 	if strings.Contains(invocation, " current ") || strings.Contains(invocation, "  ") {
 		t.Errorf("expected no <template> token and no double-space artifact, got %q", invocation)
 	}
@@ -209,5 +210,32 @@ func TestLearnMatch_LeafVersionInvocationOmitsTemplateAndUsesVersionFlag(t *test
 	}
 	if strings.Contains(invocation, " legacy ") && !strings.Contains(invocation, "--scaffold-version=legacy") {
 		t.Errorf("version must never appear as a bare positional, got %q", invocation)
+	}
+}
+
+// A candidate close to, but short of, a confident shape match must be surfaced as an uncertain
+// hint - printed but NOT skipping learn - rather than silently falling through with no signal.
+func TestLearnMatch_UncertainMatchPrintsNoteButStillWritesDraft(t *testing.T) {
+	root := buildMatchScaffold(t)
+	// One extra unrelated file beyond the "hello" leaf's own two - not an exact shape match
+	// (Confident rejects it), but clears the 0.5 Jaccard floor comfortably.
+	example := writeMatchExample(t, map[string]string{
+		"java/MyApplication.java": "class MyApplication {}\n",
+		"java/MyController.java":  "class MyController {}\n",
+		"java/MyExtra.java":       "class MyExtra {}\n",
+	})
+	outDir := filepath.Join(t.TempDir(), "draft")
+	draftPath := writeDraftFixture(t, sampleMatchDraftJSON)
+
+	out, err := run(t, newLearnCommand, example, "--output="+outDir, "--scaffolding-code="+root,
+		"--draft="+draftPath)
+	if err != nil {
+		t.Fatalf("learn returned error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Note:") || !strings.Contains(out, "scaffold create app hello") {
+		t.Errorf("expected an uncertain-match note naming the near-match invocation, got:\n%s", out)
+	}
+	if _, err := jig.Load(filepath.Join(outDir, jig.FileName)); err != nil {
+		t.Fatalf("expected a draft to still be written despite the uncertain-match note: %v", err)
 	}
 }
