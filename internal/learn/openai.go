@@ -124,7 +124,7 @@ func (c *openAIClient) Infer(ctx context.Context, files []SourceFile) (*Draft, e
 	reqBody := openAIRequest{
 		Model: c.model,
 		Messages: []openAIMessage{
-			{Role: "system", Content: systemPrompt},
+			{Role: "system", Content: promptForFiles(files)},
 			{Role: "user", Content: buildUserContent(files)},
 		},
 	}

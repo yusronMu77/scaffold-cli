@@ -347,3 +347,40 @@ func TestWriteDraft_RejectsRedactedVariableWithDefault(t *testing.T) {
 		t.Errorf("expected the error to explain the redacted/default conflict, got: %v", err)
 	}
 }
+
+// A multi-example call's "example-N/" label (see prompt.go's buildUserContent) must never survive
+// into a draft's own output path/target - a surviving label means the model didn't strip it as
+// instructed.
+func TestWriteDraft_RejectsSurvivingExampleLabelInPath(t *testing.T) {
+	dir := t.TempDir()
+	d := &Draft{
+		Name: "widget",
+		Files: []DraftFile{
+			{Path: "example-2/Widget.java", Content: "class Widget {}\n"},
+		},
+	}
+	err := WriteDraft(dir, d, false)
+	if err == nil {
+		t.Fatal("expected a surviving example-N/ label in the path to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "example-N") {
+		t.Errorf("expected the error to name the example label, got: %v", err)
+	}
+}
+
+func TestWriteDraft_RejectsSurvivingExampleLabelInTarget(t *testing.T) {
+	dir := t.TempDir()
+	d := &Draft{
+		Name: "widget",
+		Files: []DraftFile{
+			{Path: "widget.tpl", Content: "class Widget {}\n", Target: "example-1/Widget.java"},
+		},
+	}
+	err := WriteDraft(dir, d, false)
+	if err == nil {
+		t.Fatal("expected a surviving example-N/ label in the target to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "example-N") {
+		t.Errorf("expected the error to name the example label, got: %v", err)
+	}
+}

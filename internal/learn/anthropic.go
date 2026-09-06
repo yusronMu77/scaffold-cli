@@ -82,7 +82,7 @@ func (c *anthropicClient) Infer(ctx context.Context, files []SourceFile) (*Draft
 	reqBody := anthropicRequest{
 		Model:     c.model,
 		MaxTokens: anthropicMaxTokens,
-		System:    systemPrompt,
+		System:    promptForFiles(files),
 		Messages:  []anthropicMessage{{Role: "user", Content: buildUserContent(files)}},
 		Tools: []anthropicTool{{
 			Name:        toolName,

@@ -22,15 +22,21 @@ var learnFlags = []string{
 
 func newLearnCommand() *cobra.Command {
 	return &cobra.Command{
-		Use: "learn <path> --output=<dir> [--provider=anthropic|openai] [--model=...] " +
-			"[--base-url=...] [--response-format=tool|json_schema] [--draft=<path|->] [--force]",
-		Short: "Draft a jig.yaml + templated files from one existing example folder",
+		Use: "learn <path> [<path2> ...] --output=<dir> [--provider=anthropic|openai] " +
+			"[--model=...] [--base-url=...] [--response-format=tool|json_schema] [--draft=<path|->] " +
+			"[--force]",
+		Short: "Draft a jig.yaml + templated files from one or more existing example folders",
 		Long: "scaffold learn <path> --output=<dir>\n\n" +
 			"Scans the example folder at <path>, calls an LLM once to separate invariant\n" +
 			"structure from variable names/paths/fields, and writes the result to --output as a\n" +
 			"draft jig.yaml plus templated files - a candidate, not yet a live template.\n" +
 			"Regenerating afterward goes through the existing, fully deterministic `create` path:\n" +
 			"zero further AI calls.\n\n" +
+			"Given two or more paths (`scaffold learn <path1> <path2> ... --output=<dir>`), all\n" +
+			"instances are sent to the model in ONE call, which generalizes across them instead of\n" +
+			"just one - a variable's default is always drawn from <path1> specifically, so review it\n" +
+			"with `scaffold learn-review <draft-dir> <path1>` afterward, same as the single-example\n" +
+			"case. A single <path> behaves exactly as it always has.\n\n" +
 			"Provider is chosen by --provider=anthropic|openai, or auto-detected from whichever of\n" +
 			"ANTHROPIC_API_KEY / OPENAI_API_KEY is set. --base-url points the openai provider at\n" +
 			"any compatible endpoint (Groq, OpenRouter, a local server, ...).\n\n" +
@@ -79,7 +85,7 @@ func runLearn(cmd *cobra.Command, rawArgs []string) error {
 	// agent-supplied --draft can grow one just as easily as a provider call can.
 	if !learnArgs.skipMatch {
 		scaffoldingCodeRoot := resolveScaffoldingCodeRoot(learnArgs.scaffoldingCode)
-		if invocation, found := tryMatchExistingTemplate(scaffoldingCodeRoot, learnArgs.path); found {
+		if invocation, found := tryMatchExistingTemplate(scaffoldingCodeRoot, learnArgs.paths[0]); found {
 			fmt.Fprintln(cmd.OutOrStdout(),
 				"An existing template already appears to cover this pattern - skipping learn to "+
 					"avoid a duplicate (and, where applicable, a billed model call):")
@@ -102,23 +108,28 @@ func runLearn(cmd *cobra.Command, rawArgs []string) error {
 	if err != nil {
 		return err
 	}
-	return runLearnWithClient(cmd, learnArgs.path, learnArgs.outputDir, client, learnArgs.force)
+	if len(learnArgs.paths) == 1 {
+		return runLearnWithClient(cmd, learnArgs.paths[0], learnArgs.outputDir, client, learnArgs.force)
+	}
+	return runLearnWithClientMultiExample(cmd, learnArgs.paths, learnArgs.outputDir, client, learnArgs.force)
 }
 
 type learnArgs struct {
-	path, outputDir, provider, model, baseURL, responseFormat, draftPath, scaffoldingCode string
-	force, skipMatch                                                                      bool
+	paths                                                                           []string
+	outputDir, provider, model, baseURL, responseFormat, draftPath, scaffoldingCode string
+	force, skipMatch                                                                bool
 }
 
 // parseLearnArgs validates learn's positional/flag shape, kept separate from provider resolution
 // so tests can exercise argument errors without any provider env var set.
 func parseLearnArgs(args *parsedArgs) (learnArgs, error) {
-	if len(args.positional) != 1 {
+	if len(args.positional) < 1 {
 		return learnArgs{}, fmt.Errorf(
-			"learn takes exactly one positional argument: the example folder to learn from")
+			"learn takes at least one positional argument: the example folder to learn from " +
+				"(two or more learns from all of them at once, generalizing across instances)")
 	}
 	la := learnArgs{
-		path:            args.positional[0],
+		paths:           args.positional,
 		outputDir:       args.value("output"),
 		provider:        args.value("provider"),
 		model:           args.value("model"),
@@ -176,23 +187,71 @@ func runLearnWithDraftJSON(cmd *cobra.Command, outputDir string, raw []byte, for
 	return nil
 }
 
-// runLearnWithClient does the actual scan/infer/write, taking an already-resolved Inferer so
-// tests can inject a fake one and never touch the network.
+// runLearnWithClient does the actual scan/infer/write for a single example, taking an
+// already-resolved Inferer so tests can inject a fake one and never touch the network. Its
+// signature is frozen (existing tests call it directly with a bare path), so the multi-example
+// case (below) is a separate sibling function rather than a change to this one.
 func runLearnWithClient(cmd *cobra.Command, path, outputDir string, client learn.Inferer, force bool) error {
 	files, skipped, err := learn.Scan(path)
 	if err != nil {
 		return err
 	}
-	// Said before the call, not after: the point is the user knows what did and didn't leave the
-	// machine, and the call is what sends it.
-	if len(skipped) > 0 {
-		fmt.Fprintf(cmd.OutOrStdout(),
-			"Skipped %d credential file(s)/symlink(s) - not sent to the provider:\n", len(skipped))
-		for _, s := range skipped {
-			fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", s)
-		}
-	}
+	reportSkipped(cmd, skipped)
+	return inferAndWrite(cmd, files, outputDir, client, force)
+}
 
+// runLearnWithClientMultiExample scans several examples of the same pattern in one call - the v3
+// capability from issue #19 - stamping each file's ExampleIndex so the model can tell instances
+// apart (see prompt.go's promptForFiles/buildUserContent) while emitting normal, unprefixed output
+// paths. Additive on top of runLearnWithClient above, which stays untouched for the single-example
+// case.
+func runLearnWithClientMultiExample(cmd *cobra.Command, paths []string, outputDir string, client learn.Inferer, force bool) error {
+	var files []learn.SourceFile
+	total := 0
+	for i, p := range paths {
+		found, skipped, err := learn.Scan(p)
+		if err != nil {
+			return fmt.Errorf("scanning example %d (%s): %w", i+1, p, err)
+		}
+		prefix := fmt.Sprintf("example-%d/", i+1)
+		for _, f := range found {
+			total += len(f.Content)
+			files = append(files, learn.SourceFile{Path: f.Path, Content: f.Content, ExampleIndex: i + 1})
+		}
+		labeled := make([]string, len(skipped))
+		for j, s := range skipped {
+			labeled[j] = prefix + s
+		}
+		reportSkipped(cmd, labeled)
+	}
+	// Each Scan call already bounds its own example against learn.TotalMaxBytes individually, but
+	// that check is local to one call - N examples each just under the limit would otherwise
+	// concatenate to N times it with nothing left to catch it, silently reopening the exact
+	// output-budget concern issue #23 closed.
+	if total > learn.TotalMaxBytes {
+		return fmt.Errorf("combined examples are %d bytes, over the %d byte total limit `learn` "+
+			"sends in one call across ALL examples - use fewer or smaller examples, trimmed to just "+
+			"the pattern itself", total, learn.TotalMaxBytes)
+	}
+	return inferAndWrite(cmd, files, outputDir, client, force)
+}
+
+// reportSkipped prints which credential files/symlinks Scan left out, if any - said before the
+// call, not after: the point is the user knows what did and didn't leave the machine.
+func reportSkipped(cmd *cobra.Command, skipped []string) {
+	if len(skipped) == 0 {
+		return
+	}
+	fmt.Fprintf(cmd.OutOrStdout(),
+		"Skipped %d credential file(s)/symlink(s) - not sent to the provider:\n", len(skipped))
+	for _, s := range skipped {
+		fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", s)
+	}
+}
+
+// inferAndWrite redacts, calls the model, and writes the resulting draft - shared by the
+// single-example and multi-example entry points above.
+func inferAndWrite(cmd *cobra.Command, files []learn.SourceFile, outputDir string, client learn.Inferer, force bool) error {
 	// Value-level redaction runs on whatever Scan actually read, right before it ships anywhere -
 	// a whole-file skip (above) is safe and lossless for the template, but a secret embedded in an
 	// otherwise-legitimate file (a password in application.properties, a hardcoded token in a Java
@@ -215,19 +274,23 @@ func runLearnWithClient(cmd *cobra.Command, path, outputDir string, client learn
 	return nil
 }
 
-// reportDraft prints the same summary regardless of how the draft was produced (a provider call
-// or an agent-supplied --draft).
 // printRedactionReport lists every value-level redaction by file and rule name, never the actual
 // secret text - the same "know what did and didn't leave the machine" principle the skipped-file
-// report above already follows.
+// report above already follows. A redaction's path is labeled "example-N/..." when it came from a
+// multi-example call, so two files that legitimately share the same relative path across
+// instances don't merge into one misleading report line.
 func printRedactionReport(out io.Writer, redactions []learn.Redaction) {
 	rulesByPath := map[string][]string{}
 	var paths []string
 	for _, r := range redactions {
-		if _, seen := rulesByPath[r.Path]; !seen {
-			paths = append(paths, r.Path)
+		p := r.Path
+		if r.ExampleIndex > 0 {
+			p = fmt.Sprintf("example-%d/%s", r.ExampleIndex, r.Path)
 		}
-		rulesByPath[r.Path] = append(rulesByPath[r.Path], r.Rule)
+		if _, seen := rulesByPath[p]; !seen {
+			paths = append(paths, p)
+		}
+		rulesByPath[p] = append(rulesByPath[p], r.Rule)
 	}
 	sort.Strings(paths)
 
@@ -238,6 +301,8 @@ func printRedactionReport(out io.Writer, redactions []learn.Redaction) {
 	}
 }
 
+// reportDraft prints the same summary regardless of how the draft was produced (a provider call
+// or an agent-supplied --draft).
 func reportDraft(cmd *cobra.Command, outputDir string, draft *learn.Draft) {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Learned %q into %s (draft - review before use)\n", draft.Name, outputDir)

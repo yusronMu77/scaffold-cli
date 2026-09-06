@@ -24,11 +24,9 @@ func TestLearn_RegisteredOnRootCommand(t *testing.T) {
 	}
 }
 
-func TestLearn_RequiresExactlyOnePositional(t *testing.T) {
-	exampleDir := writeExampleFolder(t)
-	if _, err := run(t, newLearnCommand, exampleDir, "extra", "--output="+t.TempDir()); err == nil {
-		t.Fatal("expected an error with more than one positional argument")
-	}
+// Zero positionals is still an error; two or more is now the multi-example mode (issue #19), not
+// an error - see TestLearnMultiExample_* in learn_multi_example_test.go.
+func TestLearn_RequiresAtLeastOnePositional(t *testing.T) {
 	if _, err := run(t, newLearnCommand, "--output="+t.TempDir()); err == nil {
 		t.Fatal("expected an error with no positional argument")
 	}

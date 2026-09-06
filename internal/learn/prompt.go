@@ -89,6 +89,57 @@ raw placeholder token itself in emitted file content.
 Call the ` + toolName + ` tool exactly once with the complete result. Do not include any other
 commentary.`
 
+// multiExampleAddendum is appended to systemPrompt (never copy-pasted separately) when 2+ examples
+// are given in one call (see isMultiExample) - the v3 capability from issue #19. Built on top of,
+// not instead of, every rule above: the invariant/variable split, casing-filter convention,
+// reserved names, computed-variable rule, and redaction contract all still apply unchanged; this
+// only adds what changes when there is more than one instance to compare.
+const multiExampleAddendum = `You are being given MULTIPLE examples of the SAME code pattern, not
+just one - each file's label below is prefixed "example-<N>/" showing which instance it belongs to.
+That prefix is a label added only to distinguish input instances; it is NOT part of the template's
+real structure, and must never appear in a "path" or "target" you emit.
+
+Use every instance to judge what is truly invariant vs. variable:
+- A concept that has a DIFFERENT value in at least one instance is DEFINITELY a variable.
+- A concept that happens to have the SAME value in every instance given is NOT necessarily
+  invariant literal text - still ask "would this plausibly differ in a new instance of this
+  pattern?" (e.g. a class name, a table name) even though these particular examples agree on it.
+  Only genuinely structural, pattern-defining text (a language keyword, a fixed framework import,
+  the shape of the code itself) should be treated as truly invariant on that basis alone.
+- A variable's "default" must be the literal value found in example-1 SPECIFICALLY (the first
+  instance), not example-2 or later - "scaffold learn-review" always checks a draft's own defaults
+  against example-1, so a default drawn from a different instance would review as broken.
+- If the examples disagree on which files exist, only include a file in your output if it appears
+  meaningfully consistent with the pattern (present in most/all instances) - an incidental file
+  that only one instance happens to have is not part of the reusable template.`
+
+// multiExampleSystemPrompt is systemPrompt plus multiExampleAddendum, concatenated rather than
+// written out separately so v1's exact wording is reused verbatim and can never quietly diverge
+// from a hand-copied duplicate.
+const multiExampleSystemPrompt = systemPrompt + "\n\n" + multiExampleAddendum
+
+// isMultiExample reports whether files were assembled from 2+ example folders in one call (see
+// SourceFile.ExampleIndex) - a structural check, not a guess from path text, so an ordinary
+// single-example scan (whose files always have ExampleIndex 0) can never be mistaken for one.
+func isMultiExample(files []SourceFile) bool {
+	for _, f := range files {
+		if f.ExampleIndex > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// promptForFiles picks the system prompt to send: the multi-example addendum applies only when
+// files actually came from more than one example, so a single-example call's request is
+// byte-for-byte what v1 always sent.
+func promptForFiles(files []SourceFile) string {
+	if isMultiExample(files) {
+		return multiExampleSystemPrompt
+	}
+	return systemPrompt
+}
+
 // inputSchema is the JSON Schema the model's tool call must satisfy, shared verbatim across every
 // provider shape - only how it's embedded in the request body differs.
 func inputSchema() map[string]any {
@@ -185,9 +236,18 @@ func inputSchema() map[string]any {
 // every file's content, clearly delimited so the model can't confuse a path for content.
 func buildUserContent(files []SourceFile) string {
 	var b strings.Builder
-	b.WriteString("Example folder contents:\n\n")
+	if isMultiExample(files) {
+		b.WriteString("Example folder contents (multiple instances of the same pattern - each " +
+			"label below shows which instance a file belongs to):\n\n")
+	} else {
+		b.WriteString("Example folder contents:\n\n")
+	}
 	for _, f := range files {
-		fmt.Fprintf(&b, "=== FILE: %s ===\n%s\n\n", f.Path, f.Content)
+		label := f.Path
+		if f.ExampleIndex > 0 {
+			label = fmt.Sprintf("example-%d/%s", f.ExampleIndex, f.Path)
+		}
+		fmt.Fprintf(&b, "=== FILE: %s ===\n%s\n\n", label, f.Content)
 	}
 	return b.String()
 }

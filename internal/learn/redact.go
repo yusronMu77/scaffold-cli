@@ -13,6 +13,10 @@ import (
 type Redaction struct {
 	Path string
 	Rule string
+	// ExampleIndex mirrors the SourceFile it came from (see scan.go) - 0 for an ordinary
+	// single-example call, 1-based when learning from several examples at once, so a report can
+	// tell apart two files that legitimately share the same relative Path across instances.
+	ExampleIndex int
 }
 
 // redactionPlaceholderPattern matches any live redaction token this package ever emits - used by
@@ -129,10 +133,10 @@ func RedactSecrets(files []SourceFile) ([]SourceFile, []Redaction) {
 	for i, f := range sorted {
 		content := f.Content
 		for _, rule := range secretRules {
-			content = redactRule(content, f.Path, rule, next, &redactions)
+			content = redactRule(content, f.Path, f.ExampleIndex, rule, next, &redactions)
 		}
-		content = redactHighEntropy(content, f.Path, next, &redactions)
-		out[i] = SourceFile{Path: f.Path, Content: content}
+		content = redactHighEntropy(content, f.Path, f.ExampleIndex, next, &redactions)
+		out[i] = SourceFile{Path: f.Path, Content: content, ExampleIndex: f.ExampleIndex}
 	}
 	return out, redactions
 }
@@ -141,7 +145,7 @@ func RedactSecrets(files []SourceFile) ([]SourceFile, []Redaction) {
 // match if the rule has no capture group, or just group 1 if it does. A value that is already a
 // redaction placeholder (an earlier rule already replaced it) or a known indirection is left
 // untouched.
-func redactRule(content, path string, rule secretRule, next func(string) string, redactions *[]Redaction) string {
+func redactRule(content, path string, exampleIndex int, rule secretRule, next func(string) string, redactions *[]Redaction) string {
 	locs := rule.re.FindAllStringSubmatchIndex(content, -1)
 	if locs == nil {
 		return content
@@ -160,7 +164,7 @@ func redactRule(content, path string, rule secretRule, next func(string) string,
 		b.WriteString(content[last:redactStart])
 		b.WriteString(next(value))
 		last = redactEnd
-		*redactions = append(*redactions, Redaction{Path: path, Rule: rule.name})
+		*redactions = append(*redactions, Redaction{Path: path, Rule: rule.name, ExampleIndex: exampleIndex})
 	}
 	b.WriteString(content[last:])
 	return b.String()
@@ -169,7 +173,7 @@ func redactRule(content, path string, rule secretRule, next func(string) string,
 // redactHighEntropy runs after every named rule, over whatever content is left, catching a secret
 // with no recognizable name or vendor prefix - a hardcoded token in a Java constant, say - via
 // Shannon entropy over quoted string literals.
-func redactHighEntropy(content, path string, next func(string) string, redactions *[]Redaction) string {
+func redactHighEntropy(content, path string, exampleIndex int, next func(string) string, redactions *[]Redaction) string {
 	locs := quotedLiteralPattern.FindAllStringSubmatchIndex(content, -1)
 	if locs == nil {
 		return content
@@ -204,7 +208,7 @@ func redactHighEntropy(content, path string, next func(string) string, redaction
 		b.WriteString(content[last:valStart])
 		b.WriteString(next(value))
 		last = valEnd
-		*redactions = append(*redactions, Redaction{Path: path, Rule: "high-entropy-" + charset})
+		*redactions = append(*redactions, Redaction{Path: path, Rule: "high-entropy-" + charset, ExampleIndex: exampleIndex})
 	}
 	b.WriteString(content[last:])
 	return b.String()
