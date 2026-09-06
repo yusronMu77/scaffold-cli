@@ -19,12 +19,9 @@ func TestLearnReview_RegisteredOnRootCommand(t *testing.T) {
 	}
 }
 
-func TestLearnReview_RequiresExactlyTwoPositionals(t *testing.T) {
+func TestLearnReview_RequiresAtLeastTwoPositionals(t *testing.T) {
 	if _, err := run(t, newLearnReviewCommand, "onlyone"); err == nil {
 		t.Fatal("expected an error with only one positional argument")
-	}
-	if _, err := run(t, newLearnReviewCommand, "one", "two", "three"); err == nil {
-		t.Fatal("expected an error with three positional arguments")
 	}
 }
 
@@ -63,6 +60,25 @@ func TestLearnReview_CleanDraftReportsOK(t *testing.T) {
 	out, err := run(t, newLearnReviewCommand, draftDir, exampleDir)
 	if err != nil {
 		t.Fatalf("learn-review on a clean draft returned error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "OK") {
+		t.Errorf("expected a clean report, got:\n%s", out)
+	}
+}
+
+// #38: learn-review must accept extra example directories beyond the first, checking each
+// structurally (same file set) rather than rejecting the extra positional as an arg-count error.
+func TestLearnReview_MultipleExampleDirsAccepted(t *testing.T) {
+	exampleDir := writeExampleFolder(t)
+	draftDir := filepath.Join(t.TempDir(), "draft")
+	learnDraftInto(t, exampleDir, draftDir)
+
+	secondExampleDir := t.TempDir()
+	writeFile(t, secondExampleDir, "WidgetController.java", "class SomethingElse {}\n")
+
+	out, err := run(t, newLearnReviewCommand, draftDir, exampleDir, secondExampleDir)
+	if err != nil {
+		t.Fatalf("expected a matching-structure second example to still review clean, got: %v\n%s", err, out)
 	}
 	if !strings.Contains(out, "OK") {
 		t.Errorf("expected a clean report, got:\n%s", out)

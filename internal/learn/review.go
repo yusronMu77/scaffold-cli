@@ -27,6 +27,11 @@ type ReviewResult struct {
 	Extra []string
 	// Mismatched lists paths present on both sides whose content differs.
 	Mismatched []ContentDiff
+	// ExtraExamples holds one entry per extra example directory (2nd and later, in a multi-example
+	// learn-review call) that has any structural mismatch against the draft's render - empty for
+	// an ordinary single-example call, and omitted entirely for an extra example whose file set
+	// matches exactly.
+	ExtraExamples []ExampleStructureResult
 }
 
 // ContentDiff localizes one content mismatch: the first line the two sides disagree on, plus a
@@ -39,22 +44,46 @@ type ContentDiff struct {
 	Rendered []string
 }
 
+// ExampleStructureResult is a structural-only (file-existence) comparison of one additional
+// example directory against the draft's own render, for a multi-example learn-review call. Only
+// example-1 is checked byte-for-byte (see Review): a variable's default is drawn from example-1
+// specifically (multiExampleAddendum in prompt.go), so a later example may legitimately differ in
+// content, but should still exist under the same set of paths.
+type ExampleStructureResult struct {
+	Dir string
+	// Missing lists paths present in this example but absent from the draft's own render.
+	Missing []string
+	// Extra lists paths the draft's render produces that this example never had.
+	Extra []string
+}
+
 // Clean reports whether the review found nothing to flag.
 func (r *ReviewResult) Clean() bool {
-	return len(r.Missing) == 0 && len(r.Extra) == 0 && len(r.Mismatched) == 0
+	return len(r.Missing) == 0 && len(r.Extra) == 0 && len(r.Mismatched) == 0 && len(r.ExtraExamples) == 0
 }
 
 // IssueCount totals every kind of finding, for a one-line summary.
 func (r *ReviewResult) IssueCount() int {
-	return len(r.Missing) + len(r.Extra) + len(r.Mismatched)
+	n := len(r.Missing) + len(r.Extra) + len(r.Mismatched)
+	for _, e := range r.ExtraExamples {
+		n += len(e.Missing) + len(e.Extra)
+	}
+	return n
 }
 
 // Review renders the draft jig.yaml at draftDir using only its own declared defaults - the same
 // render.RenderSource path `create` uses - then compares the result against exampleDir, re-scanned
 // with the same Scan a `learn` run used originally so credential/binary/symlink handling matches
 // exactly. It makes no network call and reasons about nothing beyond the draft and the example
-// folder already on disk.
-func Review(draftDir, exampleDir string) (*ReviewResult, error) {
+// folder(s) already on disk.
+//
+// extraExampleDirs are the 2nd and later example directories from a multi-example `learn` call
+// (see cmd.runLearnWithClientMultiExample). Only exampleDir (example-1) is checked byte-for-byte:
+// a variable's default is always drawn from example-1 specifically (multiExampleAddendum in
+// prompt.go), so a later example may legitimately differ in content. Each extra dir is instead
+// checked structurally only - does it have the same set of files as the draft's render - recorded
+// on ReviewResult.ExtraExamples.
+func Review(draftDir, exampleDir string, extraExampleDirs ...string) (*ReviewResult, error) {
 	jigPath := filepath.Join(draftDir, jig.FileName)
 	m, err := jig.Load(jigPath)
 	if err != nil {
@@ -139,7 +168,49 @@ func Review(draftDir, exampleDir string) (*ReviewResult, error) {
 		}
 		result.Mismatched = append(result.Mismatched, buildContentDiff(p, example[p], rendered[p]))
 	}
+
+	for _, dir := range extraExampleDirs {
+		structResult, err := reviewExampleStructure(dir, rendered)
+		if err != nil {
+			return nil, err
+		}
+		if structResult != nil {
+			result.ExtraExamples = append(result.ExtraExamples, *structResult)
+		}
+	}
 	return result, nil
+}
+
+// reviewExampleStructure compares one extra example directory's file set against rendered (the
+// draft's own render), returning nil when they match exactly - content is deliberately not
+// compared here, see Review's doc comment on extraExampleDirs.
+func reviewExampleStructure(dir string, rendered map[string]string) (*ExampleStructureResult, error) {
+	sourceFiles, _, err := Scan(dir)
+	if err != nil {
+		return nil, err
+	}
+	examplePaths := make(map[string]bool, len(sourceFiles))
+	for _, f := range sourceFiles {
+		examplePaths[f.Path] = true
+	}
+
+	var missing, extra []string
+	for p := range examplePaths {
+		if _, ok := rendered[p]; !ok {
+			missing = append(missing, p)
+		}
+	}
+	for p := range rendered {
+		if !examplePaths[p] {
+			extra = append(extra, p)
+		}
+	}
+	if len(missing) == 0 && len(extra) == 0 {
+		return nil, nil
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	return &ExampleStructureResult{Dir: dir, Missing: missing, Extra: extra}, nil
 }
 
 // buildContentDiff finds the first line the two sides disagree on and returns a few lines of

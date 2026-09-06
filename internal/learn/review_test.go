@@ -173,6 +173,85 @@ func TestReview_RedactedVariableReviewsCleanWhenShapeMatches(t *testing.T) {
 	}
 }
 
+// #38: a second example directory whose files exactly match the draft's render (content
+// legitimately differing, since only example-1 is checked byte-for-byte) must not be flagged at
+// all - ExtraExamples stays empty and the review is clean.
+func TestReview_SecondExampleWithMatchingStructureIsClean(t *testing.T) {
+	draftDir := t.TempDir()
+	d := &Draft{
+		Name: "widget",
+		Variables: []DraftVariable{
+			{Name: "ClassName", Default: "Widget", Required: true},
+		},
+		Files: []DraftFile{
+			{Path: "{{ .ClassName }}.java", Content: "class {{ .ClassName }} {}\n"},
+		},
+	}
+	if err := WriteDraft(draftDir, d, false); err != nil {
+		t.Fatalf("WriteDraft returned error: %v", err)
+	}
+
+	example1 := writeExample(t, map[string]string{"Widget.java": "class Widget {}\n"})
+	// Same file set as the draft's render, different content - legitimately allowed for a
+	// non-primary example.
+	example2 := writeExample(t, map[string]string{"Widget.java": "class SomethingElse {}\n"})
+
+	result, err := Review(draftDir, example1, example2)
+	if err != nil {
+		t.Fatalf("Review returned error: %v", err)
+	}
+	if !result.Clean() {
+		t.Fatalf("expected a clean review (structure matches, content divergence in example-2 is allowed), got %+v", result)
+	}
+	if len(result.ExtraExamples) != 0 {
+		t.Fatalf("expected no ExtraExamples entries when structure matches, got %+v", result.ExtraExamples)
+	}
+}
+
+// A second example missing a file the draft's render produces must be flagged under
+// ExtraExamples, distinct from the primary Missing/Extra which are about example-1 only.
+func TestReview_SecondExampleMissingFileIsFlaggedStructurally(t *testing.T) {
+	draftDir := t.TempDir()
+	d := &Draft{
+		Name: "widget",
+		Files: []DraftFile{
+			{Path: "Widget.java", Content: "class Widget {}\n"},
+			{Path: "WidgetTest.java", Content: "class WidgetTest {}\n"},
+		},
+	}
+	if err := WriteDraft(draftDir, d, false); err != nil {
+		t.Fatalf("WriteDraft returned error: %v", err)
+	}
+
+	example1 := writeExample(t, map[string]string{
+		"Widget.java":     "class Widget {}\n",
+		"WidgetTest.java": "class WidgetTest {}\n",
+	})
+	// example-2 is missing WidgetTest.java entirely - a real structural difference.
+	example2 := writeExample(t, map[string]string{"Widget.java": "class Widget2 {}\n"})
+
+	result, err := Review(draftDir, example1, example2)
+	if err != nil {
+		t.Fatalf("Review returned error: %v", err)
+	}
+	if result.Clean() {
+		t.Fatal("expected the second example's missing file to be flagged, got a clean review")
+	}
+	if len(result.ExtraExamples) != 1 {
+		t.Fatalf("expected exactly one ExtraExamples entry, got %+v", result.ExtraExamples)
+	}
+	e := result.ExtraExamples[0]
+	if e.Dir != example2 {
+		t.Errorf("expected the ExtraExamples entry to name example2's dir, got %q", e.Dir)
+	}
+	if len(e.Extra) != 1 || e.Extra[0] != "WidgetTest.java" {
+		t.Errorf("expected WidgetTest.java reported extra (present in the draft's render, missing from example-2), got %+v", e)
+	}
+	if len(e.Missing) != 0 {
+		t.Errorf("expected no Missing entries, got %+v", e.Missing)
+	}
+}
+
 // The normalization for a redacted position must not blind Review to a genuine mismatch elsewhere
 // in the very same file.
 func TestReview_RedactedVariableStillCatchesMismatchElsewhereInFile(t *testing.T) {

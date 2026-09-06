@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+// UncertainScoreFloor is the minimum Score a non-confident candidate needs to clear before it's
+// worth surfacing as "similar but not confident" rather than silently ignored - tuned so a
+// coincidental one-or-two-key overlap between unrelated leaves doesn't get flagged as a near-miss.
+const UncertainScoreFloor = 0.5
+
 // ShapeKey is a file's structural fingerprint for template-matching purposes: deliberately
 // ignoring its exact name/casing and full path depth (a Java package path's dot-count carries no
 // fixed shape - a template's own default package and a real project's package legitimately have
@@ -91,4 +96,53 @@ func Confident(example, candidate Signature, minFiles int) bool {
 		}
 	}
 	return true
+}
+
+// Score reports the Jaccard similarity of two signatures as multisets - |intersection| / |union|,
+// counting each key's overlap by the smaller of its two counts - in [0,1]. 1.0 means the same
+// shapes as Confident would accept (modulo the minFiles floor, which Score doesn't apply); 0.0
+// means no shared (parentDir, ext) key at all. This is the graded signal behind the "uncertain"
+// match band: a candidate that Confident rejects but Score rates highly is worth surfacing to a
+// human rather than silently falling through to a full `learn` call.
+func Score(example, candidate Signature) float64 {
+	keys := make(map[ShapeKey]bool, len(example)+len(candidate))
+	for key := range example {
+		keys[key] = true
+	}
+	for key := range candidate {
+		keys[key] = true
+	}
+	if len(keys) == 0 {
+		return 1.0
+	}
+	var intersection, union int
+	for key := range keys {
+		e, c := example[key], candidate[key]
+		if e < c {
+			intersection += e
+			union += c
+		} else {
+			intersection += c
+			union += e
+		}
+	}
+	if union == 0 {
+		return 0.0
+	}
+	return float64(intersection) / float64(union)
+}
+
+// Evaluate reports whether candidate confidently matches example (same rule as Confident) and,
+// when it doesn't, a graded uncertainScore for how close it came. Both share the same minFiles
+// floor Confident applies: a candidate too thin to ever be confident (a chassis-only or
+// single-file remainder) is never flagged as an uncertain match either, since a coincidental
+// one-file shape overlap is common and not a meaningful signal on its own.
+func Evaluate(example, candidate Signature, minFiles int) (confident bool, uncertainScore float64) {
+	if count(candidate) < minFiles {
+		return false, 0
+	}
+	if Confident(example, candidate, minFiles) {
+		return true, 1.0
+	}
+	return false, Score(example, candidate)
 }

@@ -18,30 +18,46 @@ import (
 // internal/learn and the issue #22 plan notes).
 const minMatchFiles = 2
 
+// matchResult is what tryMatchExistingTemplate/tryMatchScaffold found, if anything: a Confident
+// match (invocation set, Confident true, skip learn entirely) or, failing that, the best
+// Uncertain-but-not-confident candidate seen across every scaffold checked (see learn.Evaluate) -
+// worth a hint to the user, but never worth skipping learn over.
+type matchResult struct {
+	invocation string
+	confident  bool
+	uncertain  bool
+	score      float64
+}
+
 // tryMatchExistingTemplate looks for an already-registered template whose base (no-overlay) shape
 // matches the example folder at examplePath, returning the `scaffold create` invocation that
 // already covers it. It never calls a provider and never writes anything; any failure anywhere -
 // an unreadable registry, a leaf that can't resolve with its own defaults - just means "no match
 // found" here, the same never-hard-fail spirit `list` already applies as a browsing command, since
 // this is a best-effort optimization in front of `learn`'s own, always-safe fallback.
-func tryMatchExistingTemplate(root, examplePath string) (string, bool) {
+func tryMatchExistingTemplate(root, examplePath string) matchResult {
 	exampleFiles, _, err := learn.Scan(examplePath)
 	if err != nil {
-		return "", false
+		return matchResult{}
 	}
 	exampleSig := learn.ShapeSignature(sourceFilePaths(exampleFiles))
 
 	rootJig, err := jig.LoadRoot(filepath.Join(root, jig.FileName))
 	if err != nil {
-		return "", false
+		return matchResult{}
 	}
 
+	var best matchResult
 	for _, scaffold := range rootJig.ValueNames() {
-		if inv, ok := tryMatchScaffold(root, scaffold, exampleSig); ok {
-			return inv, true
+		r := tryMatchScaffold(root, scaffold, exampleSig)
+		if r.confident {
+			return r
+		}
+		if r.uncertain && r.score > best.score {
+			best = r
 		}
 	}
-	return "", false
+	return best
 }
 
 func sourceFilePaths(files []learn.SourceFile) []string {
@@ -70,15 +86,18 @@ func cloneSignature(sig learn.Signature) learn.Signature {
 
 // tryMatchScaffold checks every base-shape leaf under one scaffold, preferring the registry's
 // default version first so a tie among near-identical leaves (e.g. two versions of the same thin
-// library) resolves deterministically rather than depending on registry declaration order.
-func tryMatchScaffold(root, scaffold string, exampleSig learn.Signature) (string, bool) {
+// library) resolves deterministically rather than depending on registry declaration order. It
+// returns immediately on the first confident leaf, but otherwise keeps checking every leaf so the
+// best uncertain candidate (see learn.Evaluate) can be reported instead of just the first one
+// tried.
+func tryMatchScaffold(root, scaffold string, exampleSig learn.Signature) matchResult {
 	cases, err := enumerate(root, scaffold)
 	if err != nil {
-		return "", false
+		return matchResult{}
 	}
 	scaffoldPath, err := discovery.ResolveScaffoldPath(root, scaffold)
 	if err != nil {
-		return "", false
+		return matchResult{}
 	}
 	defaultVersion, _ := discovery.ResolveVersion(scaffoldPath, "")
 
@@ -95,6 +114,7 @@ func tryMatchScaffold(root, scaffold string, exampleSig learn.Signature) (string
 	var chassisSig learn.Signature
 	haveChassis := false
 
+	var best matchResult
 	for _, c := range base {
 		args := &parsedArgs{flags: map[string]string{}, consumed: map[string]bool{}}
 		for k, v := range c.selectors {
@@ -127,15 +147,21 @@ func tryMatchScaffold(root, scaffold string, exampleSig learn.Signature) (string
 		learn.Subtract(candidateSig, chassisSig)
 		learn.Subtract(exampleRemainder, chassisSig)
 
-		if learn.Confident(exampleRemainder, candidateSig, minMatchFiles) {
+		confident, score := learn.Evaluate(exampleRemainder, candidateSig, minMatchFiles)
+		if confident {
 			inv, err := formatCreateInvocation(scaffoldPath, scaffold, c, defaultVersion)
 			if err != nil {
 				continue
 			}
-			return inv, true
+			return matchResult{invocation: inv, confident: true, score: score}
+		}
+		if score >= learn.UncertainScoreFloor && score > best.score {
+			if inv, err := formatCreateInvocation(scaffoldPath, scaffold, c, defaultVersion); err == nil {
+				best = matchResult{invocation: inv, uncertain: true, score: score}
+			}
 		}
 	}
-	return "", false
+	return best
 }
 
 // scaffoldChassisSignature renders the scaffold-root source alone (its own physical files, none of

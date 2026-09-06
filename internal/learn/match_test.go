@@ -99,6 +99,83 @@ func TestConfident_MatchesEqualShapeAtOrAboveMinFiles(t *testing.T) {
 	}
 }
 
+func TestScore_IdenticalSignaturesScoreOne(t *testing.T) {
+	sig := ShapeSignature([]string{"java/controller/Foo.java", "java/dto/Bar.java"})
+	if got := Score(sig, sig); got != 1.0 {
+		t.Fatalf("expected identical signatures to score 1.0, got %v", got)
+	}
+}
+
+func TestScore_DisjointSignaturesScoreZero(t *testing.T) {
+	example := ShapeSignature([]string{"java/controller/Foo.java"})
+	candidate := ShapeSignature([]string{"python/models/bar.py"})
+	if got := Score(example, candidate); got != 0.0 {
+		t.Fatalf("expected disjoint signatures to score 0.0, got %v", got)
+	}
+}
+
+func TestScore_PartialOverlapScoresBetweenZeroAndOne(t *testing.T) {
+	// 3 shared (controller,.java) + 1 example-only (dto,.java) + 1 candidate-only (model,.java):
+	// intersection = 3, union = 3+1+1 = 5, so 3/5 = 0.6.
+	example := ShapeSignature([]string{
+		"java/controller/A.java", "java/controller/B.java", "java/controller/C.java",
+		"java/dto/D.java",
+	})
+	candidate := ShapeSignature([]string{
+		"java/controller/A.java", "java/controller/B.java", "java/controller/C.java",
+		"java/model/E.java",
+	})
+	got := Score(example, candidate)
+	if got <= 0.0 || got >= 1.0 {
+		t.Fatalf("expected a partial overlap to score strictly between 0 and 1, got %v", got)
+	}
+	if want := 0.6; got != want {
+		t.Fatalf("expected Jaccard score %v, got %v", want, got)
+	}
+}
+
+func TestScore_BothEmptyScoresOne(t *testing.T) {
+	if got := Score(Signature{}, Signature{}); got != 1.0 {
+		t.Fatalf("expected two empty signatures to score 1.0, got %v", got)
+	}
+}
+
+// Evaluate must apply the same minFiles floor to the uncertain score it does to confidence - a
+// thin one-file remainder must never be flagged as even an uncertain match, matching Confident's
+// own chassis-only rejection above.
+func TestEvaluate_ThinRemainderNeverUncertainEitherSideOfFloor(t *testing.T) {
+	example := ShapeSignature([]string{"java/Unrelated.java"})
+	candidate := ShapeSignature([]string{"java/Whatever.java"})
+	confident, score := Evaluate(example, candidate, 2)
+	if confident {
+		t.Fatal("expected a single-file remainder to never be confident")
+	}
+	if score != 0 {
+		t.Fatalf("expected a single-file remainder below minFiles to score 0 (not flagged as uncertain either), got %v", score)
+	}
+}
+
+func TestEvaluate_ConfidentMatchScoresOne(t *testing.T) {
+	example := ShapeSignature([]string{"java/A.java", "java/B.java"})
+	candidate := ShapeSignature([]string{"java/X.java", "java/Y.java"})
+	confident, score := Evaluate(example, candidate, 2)
+	if !confident || score != 1.0 {
+		t.Fatalf("expected a confident match to report confident=true, score=1.0, got confident=%v score=%v", confident, score)
+	}
+}
+
+func TestEvaluate_PartialOverlapAboveMinFilesIsUncertainNotConfident(t *testing.T) {
+	example := ShapeSignature([]string{"java/controller/A.java", "java/controller/B.java", "java/dto/C.java"})
+	candidate := ShapeSignature([]string{"java/controller/X.java", "java/controller/Y.java", "java/model/Z.java"})
+	confident, score := Evaluate(example, candidate, 2)
+	if confident {
+		t.Fatal("expected a differing shape to never be confident")
+	}
+	if score <= 0 || score >= 1.0 {
+		t.Fatalf("expected a graded uncertain score strictly between 0 and 1, got %v", score)
+	}
+}
+
 func TestConfident_RejectsDifferentShapes(t *testing.T) {
 	example := ShapeSignature([]string{
 		"java/controller/OrderController.java",
