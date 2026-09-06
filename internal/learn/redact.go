@@ -1,6 +1,8 @@
 package learn
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -37,22 +39,57 @@ const RedactionProbeValue = "__SCAFFOLD_REDACTED_SECRET_PROBE__"
 type secretRule struct {
 	name string
 	re   *regexp.Regexp
+	// validate, when set, gates a shape match with a structural check beyond the regex - the jwt
+	// rule uses this to require valid base64url+JSON segments, not just the right character shape.
+	// A rule with no validate always accepts every shape match, same as before this field existed.
+	validate func(value string) bool
 }
 
 // secretRules is a FIXED SLICE, never a map - order must be reproducible so redaction numbering is
 // deterministic (Review depends on re-deriving the exact same output from the same input). A rule
 // with a capture group redacts only group 1, keeping the surrounding key name/scheme/username
-// visible; a rule with none redacts the whole match.
+// visible; a rule with none redacts the whole match. Order also decides which rule's name wins
+// when two patterns could both match the same text - a more specific prefix must come before a
+// broader one that would otherwise also match it (anthropic-key's "sk-ant-" before openai-key's
+// looser "sk-").
 var secretRules = []secretRule{
-	{"aws-access-key", regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`)},
-	{"google-api-key", regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`)},
-	{"github-token", regexp.MustCompile(`\bgh[pousr]_[0-9A-Za-z]{36,}\b`)},
-	{"slack-token", regexp.MustCompile(`\bxox[baprs]-[0-9A-Za-z-]{10,48}\b`)},
-	{"jwt", regexp.MustCompile(`\bey[A-Za-z0-9_-]{10,}\.ey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)},
-	{"private-key-block", regexp.MustCompile(`(?s)-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----.*?-----END[ A-Z0-9_-]*PRIVATE KEY-----`)},
-	{"url-credential", regexp.MustCompile(`://[^:/\s'"]+:([^@/\s'"]+)@`)},
-	{"generic-secret-assignment", regexp.MustCompile(
+	{name: "aws-access-key", re: regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`)},
+	{name: "google-api-key", re: regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`)},
+	{name: "github-token", re: regexp.MustCompile(`\bgh[pousr]_[0-9A-Za-z]{36,}\b|\bgithub_pat_[0-9A-Za-z_]{82}\b`)},
+	{name: "slack-token", re: regexp.MustCompile(`\bxox[baprs]-[0-9A-Za-z-]{10,200}\b`)},
+	{name: "slack-webhook", re: regexp.MustCompile(`https://hooks\.slack\.com/services/T[0-9A-Za-z]{8,}/B[0-9A-Za-z]{8,}/[0-9A-Za-z]{20,}`)},
+	{name: "stripe-key", re: regexp.MustCompile(`\b(?:sk|pk|rk)_(?:live|test)_[0-9A-Za-z]{20,}\b`)},
+	{name: "npm-token", re: regexp.MustCompile(`\bnpm_[0-9A-Za-z]{36}\b`)},
+	{name: "pypi-token", re: regexp.MustCompile(`\bpypi-AgEIcHlwaS5vcmc[0-9A-Za-z_-]{50,}\b`)},
+	{name: "azure-connection-string", re: regexp.MustCompile(`AccountName=[^;]+;AccountKey=([^;]+);`)},
+	{name: "anthropic-key", re: regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{20,}\b`)},
+	{name: "openai-key", re: regexp.MustCompile(`\bsk-[A-Za-z0-9]{20,}\b`)},
+	{name: "jwt", re: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`), validate: isStructurallyValidJWT},
+	{name: "private-key-block", re: regexp.MustCompile(`(?s)-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----.*?-----END[ A-Z0-9_-]*PRIVATE KEY-----`)},
+	{name: "url-credential", re: regexp.MustCompile(`://[^:/\s'"]+:([^@/\s'"]+)@`)},
+	{name: "generic-secret-assignment", re: regexp.MustCompile(
 		`(?i)(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|credential)s?["']?\s*[:=]\s*["']?([^"'\s]{6,100})["']?`)},
+}
+
+// isStructurallyValidJWT reports whether value's header and payload segments are each valid
+// base64url-encoded JSON objects - the same structural check detect-secrets' JwtTokenDetector
+// applies, catching what the eyJ...eyJ...  shape alone can't: text that merely looks like a JWT.
+func isStructurallyValidJWT(value string) bool {
+	parts := strings.Split(value, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts[:2] {
+		decoded, err := base64.RawURLEncoding.DecodeString(part)
+		if err != nil {
+			return false
+		}
+		var obj map[string]any
+		if err := json.Unmarshal(decoded, &obj); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // indirectionPatterns match a value that LOOKS like a hardcoded secret by shape but is actually a
@@ -86,6 +123,11 @@ const (
 	hexEntropyLimit        = 3.0 // detect-secrets' real default for hex-charset candidates
 	dedupMinLen            = 12  // below this, two unrelated short matches must not collapse into one variable
 )
+
+// hashDigestLengths are hex-string lengths that match a common content digest (MD5, SHA-1,
+// SHA-256) rather than a secret - a pinned commit hash or checksum in a quoted literal is high
+// entropy by construction but isn't a credential, so it's exempted from the entropy check.
+var hashDigestLengths = map[int]bool{32: true, 40: true, 64: true}
 
 const (
 	base64Charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=_-"
@@ -161,6 +203,9 @@ func redactRule(content, path string, exampleIndex int, rule secretRule, next fu
 		if isIndirection(value) || redactionPlaceholderPattern.MatchString(value) {
 			continue
 		}
+		if rule.validate != nil && !rule.validate(value) {
+			continue
+		}
 		b.WriteString(content[last:redactStart])
 		b.WriteString(next(value))
 		last = redactEnd
@@ -196,6 +241,9 @@ func redactHighEntropy(content, path string, exampleIndex int, next func(string)
 		}
 		charset, ok := candidateCharset(value)
 		if !ok {
+			continue
+		}
+		if charset == "hex" && hashDigestLengths[len(value)] {
 			continue
 		}
 		limit := base64EntropyLimit
