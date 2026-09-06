@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -155,6 +156,28 @@ func validNoRawRedactionPlaceholder(f DraftFile) error {
 	return nil
 }
 
+// exampleLabelPattern matches the "example-<N>/" label buildUserContent synthesizes for a
+// multi-example call (see SourceFile.ExampleIndex) - a label added only to distinguish input
+// instances, never part of a real template's structure. Checked here as defense-in-depth: the
+// system prompt already tells the model never to echo it back into an output path.
+var exampleLabelPattern = regexp.MustCompile(`^example-\d+/`)
+
+// validNoExampleLabel rejects a draft file whose path or target still starts with an
+// "example-<N>/" label - the model was told this only distinguishes input instances during a
+// multi-example `learn` and must never appear in emitted output.
+func validNoExampleLabel(f DraftFile) error {
+	if exampleLabelPattern.MatchString(f.Path) {
+		return fmt.Errorf("file %q still carries a multi-example \"example-N/\" label - the model "+
+			"was supposed to strip it; review the draft manually before trusting it", f.Path)
+	}
+	if f.Target != "" && exampleLabelPattern.MatchString(f.Target) {
+		return fmt.Errorf("file %q has target %q, which still carries a multi-example "+
+			"\"example-N/\" label - the model was supposed to strip it; review the draft manually "+
+			"before trusting it", f.Path, f.Target)
+	}
+	return nil
+}
+
 // WriteDraft writes a Draft as a jig.yaml plus its templated files under outputDir, then
 // self-validates by loading the jig.yaml back through jig.Load - the same strict decoder `create`
 // uses - so a broken draft is never reported as written successfully. A non-empty outputDir is
@@ -174,6 +197,9 @@ func WriteDraft(outputDir string, d *Draft, force bool) error {
 			}
 		}
 		if err := validNoRawRedactionPlaceholder(f); err != nil {
+			return err
+		}
+		if err := validNoExampleLabel(f); err != nil {
 			return err
 		}
 	}

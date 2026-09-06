@@ -128,7 +128,7 @@ func TestScan_RejectsOversizedFile(t *testing.T) {
 
 func TestScan_RejectsOversizedTotal(t *testing.T) {
 	dir := t.TempDir()
-	// Each file stays under perFileMaxBytes on its own; together they exceed totalMaxBytes, which
+	// Each file stays under perFileMaxBytes on its own; together they exceed TotalMaxBytes, which
 	// must trip even though no single file would.
 	perFile := perFileMaxBytes / 2
 	write(t, dir, "a.txt", strings.Repeat("x", perFile))

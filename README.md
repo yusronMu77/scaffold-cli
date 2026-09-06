@@ -180,6 +180,7 @@ any failure, so it works as a CI gate.
 ```bash
 scaffold learn <path> --output=<dir> [--provider=anthropic|openai] [--model=...] [--base-url=...]
 scaffold learn <path> --output=<dir> --draft=<path|->   # already-reasoned draft, no provider call
+scaffold learn <path1> <path2> ... --output=<dir>       # generalize across 2+ examples at once
 ```
 
 `--output` must be an empty (or not-yet-existing) directory; pass `--force` to write into one that
@@ -206,6 +207,12 @@ same deterministic `create` path as every other template — zero further AI cal
 per-provider default.
 
 This makes a real call to whichever provider you configure, at that provider's usual cost.
+
+**Given two or more paths, `learn` generalizes across all of them in one call** instead of just
+one — useful when a single example under-constrains what's actually invariant vs. variable. A
+variable's `default` is always drawn from the *first* path given, so review the result with
+`scaffold learn-review <draft-dir> <path1>` afterward, exactly as for a single example. A single
+`<path>` behaves exactly as it always has.
 
 **`--draft=<path|->` skips the provider call entirely.** An AI agent invoking `learn` (e.g. via
 `scaffold-cli-skill`) is already an LLM — rather than pay for a second, separately-billed model

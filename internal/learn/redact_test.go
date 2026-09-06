@@ -188,3 +188,19 @@ func TestRedactSecrets_PlaceholderNotReRedactedByLaterRule(t *testing.T) {
 		t.Errorf("expected exactly one placeholder token, got: %s", got)
 	}
 }
+
+// RedactSecrets must preserve ExampleIndex on its output SourceFiles and on any Redaction it
+// records - dropping it would silently break multi-example prompt selection downstream (see
+// prompt.go's isMultiExample/promptForFiles), since redaction always runs before the model call.
+func TestRedactSecrets_PreservesExampleIndex(t *testing.T) {
+	files := []SourceFile{
+		{Path: "a.properties", Content: "password=supersecretvalue123", ExampleIndex: 2},
+	}
+	out, redactions := RedactSecrets(files)
+	if len(out) != 1 || out[0].ExampleIndex != 2 {
+		t.Fatalf("expected the output file to keep ExampleIndex=2, got %+v", out)
+	}
+	if len(redactions) != 1 || redactions[0].ExampleIndex != 2 {
+		t.Fatalf("expected the recorded redaction to carry ExampleIndex=2, got %+v", redactions)
+	}
+}

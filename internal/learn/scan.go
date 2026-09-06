@@ -17,6 +17,13 @@ import (
 type SourceFile struct {
 	Path    string
 	Content string
+
+	// ExampleIndex is 0 for an ordinary single-example scan (Scan never sets this) or 1-based
+	// when this file was assembled from the Nth of 2+ example folders given to one `learn`
+	// invocation at once (see cmd.runLearnWithClientMultiExample). Structural, not content-based,
+	// so a real project folder that happens to contain a subdirectory literally named
+	// "example-1" can never be mistaken for a multi-example invocation.
+	ExampleIndex int
 }
 
 // outputBudgetBytes estimates how much text anthropicMaxTokens (the tighter of the two providers'
@@ -24,18 +31,18 @@ type SourceFile struct {
 // bytes/token for code-like text.
 const outputBudgetBytes = anthropicMaxTokens * 7 / 2 // 57344
 
-// totalMaxBytes and perFileMaxBytes cap what gets sent to the model in one call, sized against
+// TotalMaxBytes and perFileMaxBytes cap what gets sent to the model in one call, sized against
 // outputBudgetBytes rather than an arbitrary round number: a draft echoes every scanned file back
 // as templated content, so input that can't fit in the output budget is a run that's guaranteed to
-// fail on stop_reason=max_tokens after being billed. totalMaxBytes is set well below the raw
+// fail on stop_reason=max_tokens after being billed. TotalMaxBytes is set well below the raw
 // budget, not 1:1 with it - templating a scanned file usually makes it LONGER, not shorter (a bare
 // identifier like "order" becomes "{{ .EntityName | kebabcase }}"), and the tool-call JSON adds its
-// own escaping/field overhead on top. perFileMaxBytes matches totalMaxBytes: a single file over the
+// own escaping/field overhead on top. perFileMaxBytes matches TotalMaxBytes: a single file over the
 // total budget can never round-trip either way, and keeping them equal means one oversized file
 // gets the more specific "per-file" error naming it instead of the generic "total" one.
 const (
-	totalMaxBytes   = outputBudgetBytes / 2 // 28672
-	perFileMaxBytes = totalMaxBytes
+	TotalMaxBytes   = outputBudgetBytes / 2 // 28672
+	perFileMaxBytes = TotalMaxBytes
 )
 
 // credentialFileNames and credentialFileExts are files whose whole purpose is holding secrets.
@@ -142,10 +149,10 @@ func Scan(dir string) ([]SourceFile, []string, error) {
 			return nil
 		}
 		total += len(data)
-		if total > totalMaxBytes {
+		if total > TotalMaxBytes {
 			return fmt.Errorf("example folder is over the %d byte total limit for `learn` - "+
 				"trim it to just the pattern itself (this cap is sized so learn's output can "+
-				"echo everything back within its response budget)", totalMaxBytes)
+				"echo everything back within its response budget)", TotalMaxBytes)
 		}
 		files = append(files, SourceFile{Path: filepath.ToSlash(rel), Content: string(data)})
 		return nil
