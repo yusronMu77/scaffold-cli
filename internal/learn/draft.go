@@ -209,6 +209,9 @@ func WriteDraft(outputDir string, d *Draft, force bool) error {
 	if err := CheckOutputDir(outputDir, force); err != nil {
 		return err
 	}
+	if err := clearOutputDir(outputDir, force); err != nil {
+		return err
+	}
 
 	m := jig.Jig{
 		Name:        d.Name,
@@ -287,6 +290,32 @@ func CheckOutputDir(outputDir string, force bool) error {
 	if len(entries) > 0 {
 		return fmt.Errorf("--output %s is not empty; a draft would overwrite what is already "+
 			"there. Point --output at a fresh directory, or pass --force to write anyway", outputDir)
+	}
+	return nil
+}
+
+// clearOutputDir removes everything already in outputDir before a forced WriteDraft writes the
+// new draft into it. Without this, a re-run of `learn --draft ... --force` after editing the
+// draft JSON (e.g. renaming a placeholder) only ever adds/overwrites files - a file whose old
+// literal path no longer appears in the new draft is left behind on disk, where render.RenderSource
+// picks it up anyway since it walks the whole directory rather than just jig.yaml's `files:` list.
+// --force is meant to replace a previous draft outright, not merge into it (issue #50).
+func clearOutputDir(outputDir string, force bool) error {
+	if !force {
+		return nil
+	}
+	entries, err := os.ReadDir(outputDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", outputDir, err)
+	}
+	for _, e := range entries {
+		p := filepath.Join(outputDir, e.Name())
+		if err := os.RemoveAll(p); err != nil {
+			return fmt.Errorf("clearing stale entry %s before rewriting the draft: %w", p, err)
+		}
 	}
 	return nil
 }
