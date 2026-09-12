@@ -27,6 +27,10 @@ func newLearnReviewCommand() *cobra.Command {
 			"checked structurally: it must have the same set of files as the draft's render.\n\n" +
 			"Runnable by a human before hand-editing the draft, or by an AI agent as a\n" +
 			"self-review pass before promoting it.\n\n" +
+			"`.Name` (the <name> positional `create` supplies on the command line) has no\n" +
+			"`default:` of its own to draw from here, so it renders as <example-dir>'s own\n" +
+			"basename instead - declare an explicit variable for anything that needs a real\n" +
+			"default during review.\n\n" +
 			"Exit code is non-zero if any issue is found.",
 		DisableFlagParsing: true,
 		RunE:               runLearnReview,
