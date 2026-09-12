@@ -103,14 +103,19 @@ func Review(draftDir, exampleDir string, extraExampleDirs ...string) (*ReviewRes
 		}
 	}
 
-	base := render.EngineFacts("", "", "", "", nil, nil)
+	// `.Name` is the CLI's own <name> positional, supplied at `create` time and never declared as a
+	// jig variable with a `default:` of its own - review has no such positional to draw from, so it
+	// stands in the example directory's own basename instead, the least-surprising value a draft
+	// referencing `.Name` in a path could reproduce byte-for-byte (issue #49).
+	name := filepath.Base(exampleDir)
+	base := render.EngineFacts(name, "", "", "", nil, nil)
 	vars, err := render.ResolveVariables([]*jig.Jig{m}, render.VariableSource{
 		Flags: probeFlags, Base: base,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("resolving %s's own defaults: %w", jigPath, err)
 	}
-	ctx := render.BuildContext(vars, nil, "", "", "", "", nil, nil)
+	ctx := render.BuildContext(vars, nil, name, "", "", "", nil, nil)
 	if err := render.ApplyComputed(ctx, []*jig.Jig{m}); err != nil {
 		return nil, err
 	}

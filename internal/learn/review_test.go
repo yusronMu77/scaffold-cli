@@ -173,6 +173,38 @@ func TestReview_RedactedVariableReviewsCleanWhenShapeMatches(t *testing.T) {
 	}
 }
 
+// #49: `.Name` is the create-time <name> positional and has no `default:` of its own to draw
+// from during review - it must resolve to exampleDir's own basename rather than the empty string,
+// or a draft path built from `.Name` mismatches the example on every single file.
+func TestReview_NameInPathDefaultsToExampleDirBasename(t *testing.T) {
+	exampleDir := t.TempDir()
+	name := filepath.Base(exampleDir)
+	if err := os.MkdirAll(filepath.Join(exampleDir, name), 0o755); err != nil {
+		t.Fatalf("seeding example dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(exampleDir, name, "main.tf"), []byte("cluster\n"), 0o644); err != nil {
+		t.Fatalf("writing example file: %v", err)
+	}
+
+	draftDir := t.TempDir()
+	d := &Draft{
+		Name:  "cluster",
+		Files: []DraftFile{{Path: "{{ .Name }}/main.tf", Content: "cluster\n"}},
+	}
+	if err := WriteDraft(draftDir, d, false); err != nil {
+		t.Fatalf("WriteDraft returned error: %v", err)
+	}
+
+	result, err := Review(draftDir, exampleDir)
+	if err != nil {
+		t.Fatalf("Review returned error: %v", err)
+	}
+	if !result.Clean() {
+		t.Fatalf("expected .Name to resolve to %q (exampleDir's own basename) and review clean, got %+v",
+			name, result)
+	}
+}
+
 // #38: a second example directory whose files exactly match the draft's render (content
 // legitimately differing, since only example-1 is checked byte-for-byte) must not be flagged at
 // all - ExtraExamples stays empty and the review is clean.
