@@ -97,7 +97,13 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 	if output == "" {
 		output = "."
 	}
+	// A `flat_output` scaffold's own `target:`s are already fully-qualified relative to the
+	// project root, so nesting them under an extra <name>/ would duplicate that prefix - write
+	// straight into --output instead (issue #53).
 	targetDir := filepath.Join(output, name)
+	if p.FlatOutput {
+		targetDir = output
+	}
 	out := cmd.OutOrStdout()
 
 	if args.value("print") == "true" {
