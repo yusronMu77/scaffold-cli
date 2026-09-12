@@ -32,6 +32,11 @@ func newLearnCommand() *cobra.Command {
 			"draft jig.yaml plus templated files - a candidate, not yet a live template.\n" +
 			"Regenerating afterward goes through the existing, fully deterministic `create` path:\n" +
 			"zero further AI calls.\n\n" +
+			"A draft's file paths are relative to <path> (the scanned example folder) itself, not\n" +
+			"the destination the template will eventually write to once registered - don't bake a\n" +
+			"real project's destination prefix into a draft's own paths, or `learn-review`'s\n" +
+			"byte-for-byte comparison against <path> will report every file as mismatched. Add any\n" +
+			"such nesting as a `target:` override after promoting instead.\n\n" +
 			"Given two or more paths (`scaffold learn <path1> <path2> ... --output=<dir>`), all\n" +
 			"instances are sent to the model in ONE call, which generalizes across them instead of\n" +
 			"just one - a variable's default is always drawn from <path1> specifically, so review it\n" +
