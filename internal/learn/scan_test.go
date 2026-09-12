@@ -28,6 +28,34 @@ func TestScan_SkipsHiddenDirsAndBinaryFiles(t *testing.T) {
 	}
 }
 
+// #54: a real, working example built the normal way for its ecosystem (npm install, a Python test
+// run, a Rust/Java build) leaves behind these directories, and none of them are part of the
+// pattern being learned - node_modules/ alone can be thousands of files.
+func TestScan_SkipsBuildAndDependencyArtifactDirs(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "src/index.js", "console.log('hi')")
+	write(t, dir, "node_modules/left-pad/index.js", "module.exports = () => {}")
+	write(t, dir, "dist/bundle.js", "console.log('built')")
+	write(t, dir, "build/output.js", "console.log('built')")
+	write(t, dir, "target/debug/app", "compiled binary stand-in")
+	write(t, dir, "bin/Debug/app.dll", "compiled binary stand-in")
+	write(t, dir, "obj/Debug/app.obj", "compiled binary stand-in")
+	write(t, dir, "__pycache__/module.cpython-312.pyc", "compiled bytecode stand-in")
+
+	files, _, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+
+	var paths []string
+	for _, f := range files {
+		paths = append(paths, f.Path)
+	}
+	if len(paths) != 1 || paths[0] != "src/index.js" {
+		t.Fatalf("expected only src/index.js, got %v", paths)
+	}
+}
+
 // Keeping dot-files widened what `learn` uploads, so every credential store that used to be
 // covered only by the blanket dot-file skip has to be named in the deny-list. `.htpasswd` is the
 // sharp case: the undotted `htpasswd` was listed while the far more common dotted spelling was not.
