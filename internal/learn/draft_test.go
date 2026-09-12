@@ -243,6 +243,46 @@ func TestWriteDraft_RefusesNonEmptyOutputWithoutForce(t *testing.T) {
 	}
 }
 
+// #50: re-running `learn --force` after editing the draft (e.g. renaming a placeholder used in a
+// file path) must fully replace the previous draft, not merge stale entries into it - a leftover
+// file under its old path would otherwise still be picked up by render.RenderSource, which walks
+// the whole output directory rather than just jig.yaml's `files:` list.
+func TestWriteDraft_ForceReplacesStaleFilesInsteadOfMerging(t *testing.T) {
+	dir := t.TempDir()
+	first := &Draft{
+		Name:      "widget",
+		Variables: []DraftVariable{{Name: "OldName", Default: "widget", Required: true}},
+		Files: []DraftFile{
+			{Path: "{{ .OldName }}/main.txt", Content: "old\n"},
+		},
+	}
+	if err := WriteDraft(dir, first, false); err != nil {
+		t.Fatalf("initial WriteDraft returned error: %v", err)
+	}
+
+	second := &Draft{
+		Name:      "widget",
+		Variables: []DraftVariable{{Name: "SetupName", Default: "widget", Required: true}},
+		Files: []DraftFile{
+			{Path: "{{ .SetupName }}/main.txt", Content: "new\n"},
+		},
+	}
+	if err := WriteDraft(dir, second, true); err != nil {
+		t.Fatalf("forced WriteDraft returned error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "{{ .OldName }}")); !os.IsNotExist(err) {
+		t.Fatalf("expected the previous run's stale {{ .OldName }} directory to be gone, stat err: %v", err)
+	}
+	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	if err != nil {
+		t.Fatalf("jig.Load failed: %v", err)
+	}
+	if len(m.Variables) != 1 || m.Variables[0].Name != "SetupName" {
+		t.Fatalf("expected only the new draft's SetupName variable to survive, got %+v", m.Variables)
+	}
+}
+
 // A file stored under a safe name (gitignore.tpl) must land as its real name (.gitignore) via a
 // `files:` entry, so git doesn't apply it to the templates repo itself.
 func TestWriteDraft_TargetBecomesFilesEntry(t *testing.T) {
