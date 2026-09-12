@@ -143,6 +143,77 @@ values:
 	return root
 }
 
+// buildSharedNameTemplatesScaffold builds two independent templates ("tofu" and "ansible") meant
+// to be created under the very same <name>, each writing to an entirely different destination tree
+// via its own `target:` override - the IaC pairing convention from issue #53.
+func buildSharedNameTemplatesScaffold(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+
+	writeFile(t, root, "jig.yaml", "name: root\nvalues:\n  - name: pair\n")
+	writeFile(t, filepath.Join(root, "pair"), "jig.yaml", "name: pair\nvalues:\n  - name: \"1.0\"\n    default: true\n")
+	writeFile(t, filepath.Join(root, "pair", "1.0"), "jig.yaml", "name: v\nvalues:\n  - name: templates\n")
+
+	tmpl := filepath.Join(root, "pair", "1.0", "templates")
+	writeFile(t, tmpl, "jig.yaml", "name: T\nrequired: true\nvalues:\n  - name: tofu\n  - name: ansible\n")
+
+	writeFile(t, filepath.Join(tmpl, "tofu"), "jig.yaml",
+		"name: Tofu\nfiles:\n  - path: main.tf.tpl\n    target: sources/tofu/{{ .Name }}/main.tf\n")
+	writeFile(t, filepath.Join(tmpl, "tofu"), "main.tf.tpl", "tofu\n")
+
+	writeFile(t, filepath.Join(tmpl, "ansible"), "jig.yaml",
+		"name: Ansible\nfiles:\n  - path: ansible.cfg.tpl\n    target: sources/ansible/{{ .Name }}/ansible.cfg\n")
+	writeFile(t, filepath.Join(tmpl, "ansible"), "ansible.cfg.tpl", "ansible\n")
+
+	return root
+}
+
+// #53: two independent templates sharing one <name> but writing to non-overlapping destination
+// paths must not collide just because the shared <output>/<name>/ directory already exists from
+// the first create - the existence check is scoped to this invocation's own resolved file paths,
+// not the whole directory, so the second template succeeds without needing --force at all.
+func TestCreate_NonOverlappingTemplatesShareNameWithoutForce(t *testing.T) {
+	root := buildSharedNameTemplatesScaffold(t)
+	outDir := t.TempDir()
+
+	if _, err := run(t, newCreateCommand, "pair", "tofu", "widget",
+		"--scaffolding-code="+root, "--output="+outDir); err != nil {
+		t.Fatalf("first create (tofu) returned error: %v", err)
+	}
+	if _, err := run(t, newCreateCommand, "pair", "ansible", "widget",
+		"--scaffolding-code="+root, "--output="+outDir); err != nil {
+		t.Fatalf("second create (ansible), sharing the same name with no overlapping files, "+
+			"should succeed without --force: %v", err)
+	}
+
+	if got := readGenerated(t, outDir, "widget", filepath.Join("sources", "tofu", "widget", "main.tf")); got != "tofu\n" {
+		t.Errorf("expected the tofu output to still be present, got %q", got)
+	}
+	if got := readGenerated(t, outDir, "widget", filepath.Join("sources", "ansible", "widget", "ansible.cfg")); got != "ansible\n" {
+		t.Errorf("expected the ansible output to be written, got %q", got)
+	}
+}
+
+// A genuine collision - the exact same file both templates would write - must still be refused
+// without --force, even though the check is now per-file rather than per-directory.
+func TestCreate_ActualFileCollisionStillRefusedWithoutForce(t *testing.T) {
+	root := buildSharedNameTemplatesScaffold(t)
+	outDir := t.TempDir()
+
+	if _, err := run(t, newCreateCommand, "pair", "tofu", "widget",
+		"--scaffolding-code="+root, "--output="+outDir); err != nil {
+		t.Fatalf("first create (tofu) returned error: %v", err)
+	}
+	_, err := run(t, newCreateCommand, "pair", "tofu", "widget",
+		"--scaffolding-code="+root, "--output="+outDir)
+	if err == nil {
+		t.Fatal("expected re-creating the exact same template/name to be refused without --force")
+	}
+	if !strings.Contains(err.Error(), "--force") || !strings.Contains(err.Error(), "main.tf") {
+		t.Errorf("expected the error to name --force and the specific colliding file, got: %v", err)
+	}
+}
+
 // A nested dimension checkpoint's required child (core/) is always applied - the exact same
 // "auto-continue, no flag needed" behaviour as the top-level required dimension.
 func TestCreate_NestedDimensionRequiredChildAlwaysApplies(t *testing.T) {
