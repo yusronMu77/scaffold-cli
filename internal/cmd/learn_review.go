@@ -95,6 +95,11 @@ func printReviewResult(out io.Writer, draftDir, exampleDir string, r *learn.Revi
 		fmt.Fprintf(out, "\nContent mismatch (%d file(s)):\n", len(r.Mismatched))
 		for _, d := range r.Mismatched {
 			fmt.Fprintf(out, "  %s (first differs at line %d)\n", d.Path, d.Line)
+			if d.LineEndingOnly {
+				fmt.Fprintln(out, "    differs only by line ending (CRLF vs LF) - byte-identical "+
+					"otherwise, which is why the two blocks below look the same: \\r doesn't "+
+					"render visibly in a terminal")
+			}
 			fmt.Fprintln(out, "    example:")
 			for _, l := range d.Example {
 				fmt.Fprintf(out, "      %s\n", l)

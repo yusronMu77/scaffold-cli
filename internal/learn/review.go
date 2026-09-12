@@ -42,6 +42,10 @@ type ContentDiff struct {
 	Line     int
 	Example  []string
 	Rendered []string
+	// LineEndingOnly is true when the two sides are identical once every carriage return is
+	// stripped - a `\r` doesn't render visibly in a terminal, so without this flag the printed
+	// Example/Rendered blocks look byte-identical and leave the reader to guess (issue #55).
+	LineEndingOnly bool
 }
 
 // ExampleStructureResult is a structural-only (file-existence) comparison of one additional
@@ -230,11 +234,18 @@ func buildContentDiff(path, example, rendered string) ContentDiff {
 	}
 
 	return ContentDiff{
-		Path:     path,
-		Line:     line + 1,
-		Example:  contextAround(exLines, line),
-		Rendered: contextAround(reLines, line),
+		Path:           path,
+		Line:           line + 1,
+		Example:        contextAround(exLines, line),
+		Rendered:       contextAround(reLines, line),
+		LineEndingOnly: stripCR(example) == stripCR(rendered),
 	}
+}
+
+// stripCR removes every carriage return - the one byte distinguishing CRLF from LF - so two sides
+// that are otherwise identical can be told apart from a genuine content mismatch.
+func stripCR(s string) string {
+	return strings.ReplaceAll(s, "\r", "")
 }
 
 // contextAround returns up to diffContextLines lines before and after index at, clamped to the

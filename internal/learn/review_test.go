@@ -82,6 +82,68 @@ func TestReview_ContentMismatchIsFlagged(t *testing.T) {
 	if result.Mismatched[0].Path != "WidgetController.java" {
 		t.Errorf("expected the mismatch to name WidgetController.java, got %+v", result.Mismatched[0])
 	}
+	if result.Mismatched[0].LineEndingOnly {
+		t.Errorf("expected a genuine content mismatch not to be flagged as line-ending-only, got %+v",
+			result.Mismatched[0])
+	}
+}
+
+// #55: a mismatch caused purely by CRLF-vs-LF line endings must be flagged as such - the raw diff
+// otherwise shows two visually-identical blocks (a trailing \r doesn't render in a terminal) with
+// nothing pointing at the real difference.
+func TestReview_LineEndingOnlyMismatchIsFlagged(t *testing.T) {
+	draftDir := t.TempDir()
+	d := &Draft{
+		Name:  "widget",
+		Files: []DraftFile{{Path: "Widget.java", Content: "class Widget {}\n"}},
+	}
+	if err := WriteDraft(draftDir, d, false); err != nil {
+		t.Fatalf("WriteDraft returned error: %v", err)
+	}
+
+	exampleDir := writeExample(t, map[string]string{
+		"Widget.java": "class Widget {}\r\n",
+	})
+
+	result, err := Review(draftDir, exampleDir)
+	if err != nil {
+		t.Fatalf("Review returned error: %v", err)
+	}
+	if len(result.Mismatched) != 1 {
+		t.Fatalf("expected exactly one content mismatch, got %+v", result)
+	}
+	if !result.Mismatched[0].LineEndingOnly {
+		t.Errorf("expected the CRLF-vs-LF mismatch to be flagged LineEndingOnly, got %+v", result.Mismatched[0])
+	}
+}
+
+// A genuine content mismatch that also happens to differ in line endings must not be
+// misclassified as line-ending-only - stripping \r has to still leave a real difference.
+func TestReview_GenuineMismatchWithDifferentLineEndingsIsNotMisflagged(t *testing.T) {
+	draftDir := t.TempDir()
+	d := &Draft{
+		Name:  "widget",
+		Files: []DraftFile{{Path: "Widget.java", Content: "class Widget {}\n"}},
+	}
+	if err := WriteDraft(draftDir, d, false); err != nil {
+		t.Fatalf("WriteDraft returned error: %v", err)
+	}
+
+	exampleDir := writeExample(t, map[string]string{
+		"Widget.java": "class Something {}\r\n",
+	})
+
+	result, err := Review(draftDir, exampleDir)
+	if err != nil {
+		t.Fatalf("Review returned error: %v", err)
+	}
+	if len(result.Mismatched) != 1 {
+		t.Fatalf("expected exactly one content mismatch, got %+v", result)
+	}
+	if result.Mismatched[0].LineEndingOnly {
+		t.Errorf("expected a genuine content mismatch not to be misflagged as LineEndingOnly, got %+v",
+			result.Mismatched[0])
+	}
 }
 
 // A file the example has, but the draft never emits, is a Missing finding - the draft omitted
