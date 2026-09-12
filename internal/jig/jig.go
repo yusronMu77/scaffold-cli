@@ -265,6 +265,15 @@ type Jig struct {
 	// promoted - create/list/lint refuse to use it until `scaffold learn-promote` clears this
 	// flag.
 	Candidate bool `yaml:"candidate,omitempty"`
+
+	// FlatOutput, when true, tells `create` to write straight into `--output` (default the
+	// current directory) instead of nesting under `<output>/<name>/` - for a scaffold whose
+	// `target:`s are already fully-qualified paths relative to the project root (e.g. an
+	// infrastructure-as-code template laying files into an existing repo tree), rather than one
+	// that generates a new, self-contained `<name>` project directory. Inherited down the chain
+	// like `layout`/`verify`; a pointer so a deeper level can explicitly opt back into the default
+	// nested behavior instead of merely being unable to express "false" (issue #53).
+	FlatOutput *bool `yaml:"flat_output,omitempty"`
 }
 
 // DefaultValue returns the Values entry marked `default: true`, if any.

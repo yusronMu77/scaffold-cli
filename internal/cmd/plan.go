@@ -32,6 +32,10 @@ type plan struct {
 	Variables map[string]string
 	// Data is the merged `data:` object templates see as .Data.
 	Data map[string]any
+	// FlatOutput is the resolved `flat_output` value across the whole chain (deepest explicit
+	// setting wins, same "deeper overrides shallower" rule every other inherited field follows).
+	// See jig.Jig.FlatOutput.
+	FlatOutput bool
 }
 
 // resolvePlan walks the registries and manifests for one invocation without rendering anything.
@@ -193,6 +197,11 @@ func resolvePlan(args *parsedArgs, root, scaffold, template, name string) (*plan
 
 	for _, s := range p.Sources {
 		p.Manifests = append(p.Manifests, s.Manifest)
+	}
+	for _, m := range p.Manifests {
+		if m != nil && m.FlatOutput != nil {
+			p.FlatOutput = *m.FlatOutput
+		}
 	}
 	for _, step := range walk.Steps {
 		p.Selectors[step.Flag] = step.Value

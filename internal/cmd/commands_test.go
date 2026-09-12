@@ -214,6 +214,66 @@ func TestCreate_ActualFileCollisionStillRefusedWithoutForce(t *testing.T) {
 	}
 }
 
+// buildFlatOutputScaffold declares `flat_output: true` at the scaffold level, inherited down to
+// its one template - whose own `target:` is already a fully-qualified path relative to the
+// project root, the IaC-style pairing convention from issue #53.
+func buildFlatOutputScaffold(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+
+	writeFile(t, root, "jig.yaml", "name: root\nvalues:\n  - name: infra\n")
+	writeFile(t, filepath.Join(root, "infra"), "jig.yaml",
+		"name: infra\nflat_output: true\nvalues:\n  - name: \"1.0\"\n    default: true\n")
+	writeFile(t, filepath.Join(root, "infra", "1.0"), "jig.yaml", "name: v\nvalues:\n  - name: templates\n")
+
+	tmpl := filepath.Join(root, "infra", "1.0", "templates")
+	writeFile(t, tmpl, "jig.yaml", "name: T\nrequired: true\nvalues:\n  - name: tofu\n")
+
+	writeFile(t, filepath.Join(tmpl, "tofu"), "jig.yaml",
+		"name: Tofu\nfiles:\n  - path: main.tf.tpl\n    target: sources/tofu/{{ .Name }}/main.tf\n")
+	writeFile(t, filepath.Join(tmpl, "tofu"), "main.tf.tpl", "tofu\n")
+
+	return root
+}
+
+// #53: a scaffold declaring `flat_output: true` writes straight into --output instead of nesting
+// under <output>/<name>/, since its own `target:` is already fully-qualified relative to the
+// project root.
+func TestCreate_FlatOutputWritesToOutputRootNotNamedSubdir(t *testing.T) {
+	root := buildFlatOutputScaffold(t)
+	outDir := t.TempDir()
+
+	if _, err := run(t, newCreateCommand, "infra", "tofu", "widget",
+		"--scaffolding-code="+root, "--output="+outDir); err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(outDir, "widget")); !os.IsNotExist(err) {
+		t.Errorf("expected no <output>/<name>/ nesting for a flat_output scaffold, but %s exists",
+			filepath.Join(outDir, "widget"))
+	}
+	got, err := os.ReadFile(filepath.Join(outDir, "sources", "tofu", "widget", "main.tf"))
+	if err != nil {
+		t.Fatalf("expected the file at its fully-qualified target path: %v", err)
+	}
+	if string(got) != "tofu\n" {
+		t.Errorf("unexpected content: %q", got)
+	}
+}
+
+// flat_output is additive and off by default - an ordinary scaffold that never declares it must
+// keep today's <output>/<name>/ nesting unchanged.
+func TestCreate_DefaultScaffoldStillNestsUnderName(t *testing.T) {
+	root := buildScaffoldingCode(t)
+	_, outDir, err := createInto(t, root, "fw", "services", "payment", "--function=web")
+	if err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "payment", "pom.xml")); err != nil {
+		t.Errorf("expected the default <name>/pom.xml nesting to still exist: %v", err)
+	}
+}
+
 // A nested dimension checkpoint's required child (core/) is always applied - the exact same
 // "auto-continue, no flag needed" behaviour as the top-level required dimension.
 func TestCreate_NestedDimensionRequiredChildAlwaysApplies(t *testing.T) {
