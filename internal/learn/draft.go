@@ -125,7 +125,7 @@ func validDraftLayout(files []DraftFile) error {
 func validDraftNames(d *Draft) error {
 	seen := map[string]bool{}
 	for _, v := range d.Variables {
-		flag := render.VariableFlagName(jig.Variable{Name: v.Name, Flag: ""})
+		flag := render.VariableFlagName(jig.Variable{Name: v.Name, Flag: v.Flag})
 		if reason, reserved := jig.ReservedValueKeys[flag]; reserved {
 			return fmt.Errorf("variable %q maps to the flag --%s, which is reserved (%s) and would "+
 				"make every later `scaffold create` fail - name it something more specific, "+
@@ -219,8 +219,12 @@ func WriteDraft(outputDir string, d *Draft, force bool) error {
 		Candidate:   true,
 	}
 	for _, v := range d.Variables {
+		// Always resolved and written out explicitly - v.Flag when the draft set one, otherwise the
+		// same kebab-case-of-Name fallback the engine already applies at read time - so a promoted
+		// draft's jig.yaml is immediately usable via `--<flag>=value` with no manual edit (issue #51).
+		flag := render.VariableFlagName(jig.Variable{Name: v.Name, Flag: v.Flag})
 		m.Variables = append(m.Variables, jig.Variable{
-			Name: v.Name, Prompt: v.Prompt, Default: v.Default, Required: v.Required,
+			Name: v.Name, Prompt: v.Prompt, Flag: flag, Default: v.Default, Required: v.Required,
 			Redacted: v.Redacted,
 		})
 	}

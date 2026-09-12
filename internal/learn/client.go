@@ -20,6 +20,12 @@ type DraftVariable struct {
 	Default  string
 	Required bool
 
+	// Flag overrides the CLI flag that fills this variable; empty means WriteDraft derives the
+	// kebab-case of Name instead, same fallback jig.Variable.Flag itself documents. Always written
+	// out explicitly in the generated jig.yaml either way, so a promoted draft needs no manual
+	// `flag:` edit to be usable via CLI flags (issue #51).
+	Flag string
+
 	// Redacted mirrors jig.Variable.Redacted - the model sets this when a variable exists because
 	// a __SCAFFOLD_REDACTED_SECRET_<N>__ placeholder (see redact.go) appeared in the scanned
 	// content, not because a real value was ever visible to it.
