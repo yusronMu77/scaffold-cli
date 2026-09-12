@@ -194,6 +194,13 @@ candidate, not yet wired into any templates repository, so it's on you to review
 into place) before `create`/`list`/`lint` would ever see it. Regenerating afterward goes through the
 same deterministic `create` path as every other template — zero further AI calls per instance.
 
+**A draft's file `path`s are relative to the scanned example folder itself, not the destination the
+template will eventually write to once registered.** Don't bake a real project's destination prefix
+(e.g. a per-instance nested subdirectory) into a draft's own `path`s — `scaffold learn-review`
+compares the draft's render byte-for-byte against that same example folder treated as the root, so a
+baked-in prefix reports the entire draft as mismatched. Add that nesting as a `target:` override
+afterward, once you've promoted the draft and are wiring it into the real templates tree.
+
 `learn` is not tied to one LLM vendor. Set exactly one of these and it's picked automatically
 (`--provider` disambiguates if both happen to be set):
 
