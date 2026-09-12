@@ -39,6 +39,8 @@ Rules for variables:
   syntax Go's text/template plus Sprig already supports everywhere else in this engine.
 - A variable's "default" must be the literal value found in the example (so the draft, used
   unmodified, reproduces the example exactly).
+- Omit "flag" entirely unless the kebab-case of "name" would be a poor CLI flag (e.g. an
+  abbreviation) - it is derived automatically otherwise, so only set it to override that default.
 
 Rules for files:
 - Return every file that should be part of the template, each with:
@@ -175,6 +177,13 @@ func inputSchema() map[string]any {
 							"type":        "string",
 							"description": "Short help text describing what this variable fills in",
 						},
+						"flag": map[string]any{
+							"type": "string",
+							"description": "Optional CLI flag override, kebab-case, no leading dashes " +
+								"(e.g. \"class-name\"). Omit entirely to let the kebab-case of \"name\" " +
+								"be used instead - only set this when the name doesn't kebab-case into " +
+								"a sensible flag on its own",
+						},
 						"default": map[string]any{
 							"type":        "string",
 							"description": "The literal value found in the example",
@@ -278,6 +287,7 @@ type rawDraft struct {
 	Variables   []struct {
 		Name     string `json:"name"`
 		Prompt   string `json:"prompt"`
+		Flag     string `json:"flag"`
 		Default  string `json:"default"`
 		Required bool   `json:"required"`
 		Redacted bool   `json:"redacted"`
@@ -313,7 +323,7 @@ func ParseDraft(raw []byte) (*Draft, error) {
 	d := &Draft{Name: rd.Name, Description: rd.Description}
 	for _, v := range rd.Variables {
 		d.Variables = append(d.Variables, DraftVariable{
-			Name: v.Name, Prompt: v.Prompt, Default: v.Default, Required: v.Required,
+			Name: v.Name, Prompt: v.Prompt, Flag: v.Flag, Default: v.Default, Required: v.Required,
 			Redacted: v.Redacted,
 		})
 	}

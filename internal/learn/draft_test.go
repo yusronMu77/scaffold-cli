@@ -43,6 +43,49 @@ func TestWriteDraft_ValidDraftRoundTripsThroughJigLoad(t *testing.T) {
 	}
 }
 
+// #51: a promoted draft's jig.yaml must be immediately usable via CLI flags with no manual
+// editing pass - so every variable gets an explicit `flag:` written out, kebab-case-derived from
+// its name when the draft didn't set one itself.
+func TestWriteDraft_VariableGetsAutoDerivedFlag(t *testing.T) {
+	dir := t.TempDir()
+	d := &Draft{
+		Name:      "widget",
+		Variables: []DraftVariable{{Name: "ClusterName", Default: "widget", Required: true}},
+		Files:     []DraftFile{{Path: "a.txt", Content: "{{ .ClusterName }}"}},
+	}
+	if err := WriteDraft(dir, d, false); err != nil {
+		t.Fatalf("WriteDraft returned error: %v", err)
+	}
+	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	if err != nil {
+		t.Fatalf("jig.Load failed: %v", err)
+	}
+	if len(m.Variables) != 1 || m.Variables[0].Flag != "cluster-name" {
+		t.Fatalf("expected an auto-derived flag \"cluster-name\", got %+v", m.Variables)
+	}
+}
+
+// A draft-supplied `flag` override must survive into the written jig.yaml verbatim instead of
+// being replaced by the kebab-case default.
+func TestWriteDraft_VariableKeepsExplicitFlagOverride(t *testing.T) {
+	dir := t.TempDir()
+	d := &Draft{
+		Name:      "widget",
+		Variables: []DraftVariable{{Name: "ClusterName", Flag: "cluster", Default: "widget", Required: true}},
+		Files:     []DraftFile{{Path: "a.txt", Content: "{{ .ClusterName }}"}},
+	}
+	if err := WriteDraft(dir, d, false); err != nil {
+		t.Fatalf("WriteDraft returned error: %v", err)
+	}
+	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	if err != nil {
+		t.Fatalf("jig.Load failed: %v", err)
+	}
+	if len(m.Variables) != 1 || m.Variables[0].Flag != "cluster" {
+		t.Fatalf("expected the explicit flag override \"cluster\" to survive, got %+v", m.Variables)
+	}
+}
+
 // A piped filter cannot appear in a physical path - Windows forbids "|" in filenames - so
 // WriteDraft must reject it clearly instead of failing with a cryptic OS error partway through.
 func TestWriteDraft_RejectsPipedPathFilter(t *testing.T) {
@@ -124,6 +167,21 @@ func TestWriteDraft_RejectsReservedVariableFlag(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "reserved") {
 			t.Fatalf("expected variable %q to be rejected as reserved, got %v", name, err)
 		}
+	}
+}
+
+// A variable can collide with a reserved flag through an explicit `flag` override too, not just
+// through its `name`'s own kebab-case default - the same check must catch both.
+func TestWriteDraft_RejectsReservedFlagOverride(t *testing.T) {
+	dir := t.TempDir()
+	d := &Draft{
+		Name:      "reserved-override",
+		Variables: []DraftVariable{{Name: "EntityName", Flag: "name", Default: "x"}},
+		Files:     []DraftFile{{Path: "a.txt", Content: "x"}},
+	}
+	err := WriteDraft(dir, d, false)
+	if err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("expected an explicit flag override colliding with a reserved flag to be rejected, got %v", err)
 	}
 }
 
