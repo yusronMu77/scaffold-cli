@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 )
 
 // ExistingPolicy decides what happens when the target directory already exists.
@@ -34,9 +36,17 @@ func Write(target string, files []File, policy ExistingPolicy) (written []string
 			return nil, fmt.Errorf("%s already exists and is not a directory", target)
 		}
 		targetExists = true
-		if policy == FailIfExists {
-			return nil, fmt.Errorf("%s already exists\nuse --force to overwrite it, or "+
-				"--skip-existing to keep the files that are already there", target)
+	}
+
+	// Scoped to this invocation's own resolved file paths, not "does target exist at all": two
+	// templates sharing one <name> but writing to non-overlapping paths (e.g. a pair of IaC
+	// templates meant to be created under the same setup name) must not collide with each other's
+	// leftover directory just because it happens to already exist (issue #53).
+	if targetExists && policy == FailIfExists {
+		if colliding := collidingPaths(target, files); len(colliding) > 0 {
+			return nil, fmt.Errorf("%d file(s) already exist under %s:\n  %s\nuse --force to "+
+				"overwrite them, or --skip-existing to keep the files that are already there",
+				len(colliding), target, strings.Join(colliding, "\n  "))
 		}
 	}
 
@@ -81,6 +91,20 @@ func Write(target string, files []File, policy ExistingPolicy) (written []string
 		return nil, fmt.Errorf("merging generated files into %s: %w", target, err)
 	}
 	return written, nil
+}
+
+// collidingPaths returns, sorted, every file in files whose resolved destination under target
+// already exists on disk - the actual conflict a FailIfExists policy should refuse on, rather than
+// treating any pre-existing target directory as a collision regardless of which files it holds.
+func collidingPaths(target string, files []File) []string {
+	var colliding []string
+	for _, f := range files {
+		if _, err := os.Stat(filepath.Join(target, filepath.FromSlash(f.Path))); err == nil {
+			colliding = append(colliding, f.Path)
+		}
+	}
+	sort.Strings(colliding)
+	return colliding
 }
 
 // moveTree copies the staged tree over an existing target directory.
