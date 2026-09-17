@@ -33,7 +33,10 @@ Rules for variables:
 - Every OTHER casing of that same concept found in the example (kebab-case, camelCase, snake_case,
   UPPER_CASE, lower case, plural forms) must be expressed in the templated output as that one
   variable piped through a template filter, not as a second variable. Available filters:
-  "kebabcase", "camelcase", "snakecase", "upper", "lower", "title", "lowerFirst". IMPORTANT: Sprig's
+  "kebabcase", "camelcase", "snakecase", "upper", "lower", "title", "lowerFirst", "plural"
+  (English pluralization, e.g. "Order" -> "Orders"; covers common suffix rules plus a small
+  built-in irregular-word table - a plural this doesn't get right should be a "computed" entry
+  instead, with the literal correct plural as its value). IMPORTANT: Sprig's
   "camelcase" produces PascalCase ("Order" -> "Order", "order_status" -> "OrderStatus"), NOT
   lowerCamelCase - a common trap. For a lowerCamelCase identifier: a single-word variable just needs
   "lower" (EntityName = "Order" -> "{{ .EntityName | lower }}" = "order"); a multi-word one needs

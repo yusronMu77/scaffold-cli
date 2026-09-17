@@ -13,6 +13,7 @@ import (
 func baseFuncs() template.FuncMap {
 	funcs := sprig.TxtFuncMap()
 	funcs["lowerFirst"] = lowerFirst
+	funcs["plural"] = plural
 	return funcs
 }
 
