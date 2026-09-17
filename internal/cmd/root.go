@@ -28,6 +28,6 @@ func Execute() error {
 		SilenceUsage:  true, // a runtime failure is not a usage problem
 	}
 	root.AddCommand(newInitCommand(), newListCommand(), newCreateCommand(), newLintCommand(),
-		newLearnCommand(), newLearnReviewCommand(), newLearnPromoteCommand())
+		newLearnCommand(), newLearnReviewCommand(), newLearnPromoteCommand(), newLearnFieldsCommand())
 	return root.Execute()
 }
