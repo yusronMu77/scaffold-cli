@@ -33,9 +33,14 @@ Rules for variables:
 - Every OTHER casing of that same concept found in the example (kebab-case, camelCase, snake_case,
   UPPER_CASE, lower case, plural forms) must be expressed in the templated output as that one
   variable piped through a template filter, not as a second variable. Available filters:
-  "kebabcase", "camelcase", "snakecase", "upper", "lower", "title". Example: if the variable is
-  EntityName = "Order" and the example also contains "order-controller" and "orderService", emit
-  "{{ .EntityName | kebabcase }}-controller" and "{{ .EntityName | camelcase }}Service" - the same
+  "kebabcase", "camelcase", "snakecase", "upper", "lower", "title", "lowerFirst". IMPORTANT: Sprig's
+  "camelcase" produces PascalCase ("Order" -> "Order", "order_status" -> "OrderStatus"), NOT
+  lowerCamelCase - a common trap. For a lowerCamelCase identifier: a single-word variable just needs
+  "lower" (EntityName = "Order" -> "{{ .EntityName | lower }}" = "order"); a multi-word one needs
+  "camelcase" composed with "lowerFirst" (a scaffold-cli addition Sprig doesn't provide):
+  "{{ .EntityName | camelcase | lowerFirst }}". Example: if the variable is EntityName = "Order" and
+  the example also contains "order-controller" and "orderService", emit
+  "{{ .EntityName | kebabcase }}-controller" and "{{ .EntityName | lower }}Service" - the same
   syntax Go's text/template plus Sprig already supports everywhere else in this engine.
 - A variable's "default" must be the literal value found in the example (so the draft, used
   unmodified, reproduces the example exactly).

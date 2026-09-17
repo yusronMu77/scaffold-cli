@@ -8,8 +8,6 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/Masterminds/sprig/v3"
-
 	"scaffold-engine-go/internal/jig"
 )
 
@@ -59,10 +57,10 @@ func CollectPartials(sources []Source) (*template.Template, error) {
 	return set, nil
 }
 
-// partialFuncs is sprig plus `include`, which returns rendered text as a string so it can be piped
-// (e.g. for indentation) - something Go's built-in `template` action cannot do.
+// partialFuncs is baseFuncs plus `include`, which returns rendered text as a string so it can be
+// piped (e.g. for indentation) - something Go's built-in `template` action cannot do.
 func partialFuncs() template.FuncMap {
-	funcs := sprig.TxtFuncMap()
+	funcs := baseFuncs()
 	// Placeholder so the set parses; withInclude replaces it once the real set exists.
 	funcs["include"] = func(string, any) (string, error) { return "", nil }
 	return funcs

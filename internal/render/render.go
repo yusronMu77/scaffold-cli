@@ -11,8 +11,6 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/Masterminds/sprig/v3"
-
 	"scaffold-engine-go/internal/jig"
 )
 
@@ -276,7 +274,7 @@ func renderWith(partials *template.Template, what, text string, ctx Context) (st
 		}
 		tmpl = withInclude(clone).New(what)
 	} else {
-		tmpl = template.New(what).Funcs(sprig.TxtFuncMap())
+		tmpl = template.New(what).Funcs(baseFuncs())
 	}
 
 	tmpl, err := tmpl.Option("missingkey=error").Parse(text)
