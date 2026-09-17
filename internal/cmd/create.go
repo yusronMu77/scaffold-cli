@@ -46,7 +46,11 @@ func newCreateCommand() *cobra.Command {
 			"Three ways to look without writing anything:\n" +
 			"    --dry-run   which files would be produced\n" +
 			"    --print     what is actually in them, to stdout\n" +
-			"    --explain   which level contributed each one, and what overrode what",
+			"    --explain   which level contributed each one, and what overrode what\n\n" +
+			"--skip-existing leaves an already-existing plain file untouched, except a file the\n" +
+			"template registers under `merge:` - that one is deep-merged with the copy already on\n" +
+			"disk instead, so a second create against the same --output can still add a new\n" +
+			"dependency/config key without --force clobbering everything else already there.",
 		DisableFlagParsing: true,
 		RunE:               runCreate,
 	}

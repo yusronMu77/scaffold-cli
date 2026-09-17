@@ -58,8 +58,21 @@ func Write(target string, files []File, policy ExistingPolicy) (written []string
 
 	for _, f := range files {
 		if targetExists && policy == SkipExisting {
-			if _, statErr := os.Stat(filepath.Join(target, filepath.FromSlash(f.Path))); statErr == nil {
-				continue
+			onDisk, readErr := os.ReadFile(filepath.Join(target, filepath.FromSlash(f.Path)))
+			if readErr == nil {
+				// A plain file is left exactly as it already is - --skip-existing's whole point.
+				// A file registered under `merge:` is different: skipping it outright would silently
+				// drop whatever this invocation's own render contributed (e.g. a new dependency), so
+				// it's deep-merged with what's already there instead of either being skipped or
+				// overwriting it wholesale (issue #80).
+				if !f.Merge {
+					continue
+				}
+				merged, err := mergeStructured(f.Path, onDisk, f.Content)
+				if err != nil {
+					return nil, fmt.Errorf("merging %s into the copy already on disk: %w", f.Path, err)
+				}
+				f.Content = merged
 			}
 		}
 		dest := filepath.Join(staging, filepath.FromSlash(f.Path))
