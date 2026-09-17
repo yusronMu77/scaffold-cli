@@ -88,7 +88,8 @@ func (r *ReviewResult) IssueCount() int {
 // checked structurally only - does it have the same set of files as the draft's render - recorded
 // on ReviewResult.ExtraExamples.
 func Review(draftDir, exampleDir string, extraExampleDirs ...string) (*ReviewResult, error) {
-	jigPath := filepath.Join(draftDir, jig.FileName)
+	leafDir := DraftLeafDir(draftDir)
+	jigPath := DraftLeafJigPath(draftDir)
 	m, err := jig.Load(jigPath)
 	if err != nil {
 		return nil, err
@@ -123,9 +124,9 @@ func Review(draftDir, exampleDir string, extraExampleDirs ...string) (*ReviewRes
 	if err := render.ApplyComputed(ctx, []*jig.Jig{m}); err != nil {
 		return nil, err
 	}
-	files, _, err := render.RenderSource(render.Source{Dir: draftDir, Manifest: m}, ctx)
+	files, _, err := render.RenderSource(render.Source{Dir: leafDir, Manifest: m}, ctx)
 	if err != nil {
-		return nil, fmt.Errorf("rendering %s with its own defaults: %w", draftDir, err)
+		return nil, fmt.Errorf("rendering %s with its own defaults: %w", leafDir, err)
 	}
 
 	sourceFiles, _, err := Scan(exampleDir)

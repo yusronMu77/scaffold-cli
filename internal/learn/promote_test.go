@@ -21,7 +21,7 @@ func TestPromote_ClearsCandidateAndStaysValid(t *testing.T) {
 		t.Fatalf("WriteDraft returned error: %v", err)
 	}
 
-	before, err := jig.Load(filepath.Join(dir, jig.FileName))
+	before, err := jig.Load(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("jig.Load before promote failed: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestPromote_ClearsCandidateAndStaysValid(t *testing.T) {
 		t.Fatalf("Promote returned error: %v", err)
 	}
 
-	after, err := jig.Load(filepath.Join(dir, jig.FileName))
+	after, err := jig.Load(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("jig.Load after promote failed: %v", err)
 	}
@@ -61,12 +61,29 @@ func TestPromote_AlreadyPromotedIsRejected(t *testing.T) {
 
 func TestPromote_NonCandidateJigIsRejected(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, jig.FileName),
-		[]byte("name: not-a-draft\nfiles:\n  - path: x.txt\n"), 0o644); err != nil {
-		t.Fatalf("writing jig.yaml: %v", err)
-	}
+	writeLeafFixture(t, dir, "name: not-a-draft\nfiles:\n  - path: x.txt\n", "")
 	if err := Promote(dir); err == nil {
 		t.Fatal("expected Promote to reject a jig with no candidate flag, got nil")
+	}
+}
+
+// writeLeafFixture hand-writes a draft's leaf jig.yaml (plus Widget.java, when javaContent is
+// non-empty) directly under dir's DraftLeafDir - the shape a real WriteDraft call produces,
+// bypassed here so these tests can control jig.yaml's exact bytes (comments included) to prove
+// Promote's node-surgery preserves them.
+func writeLeafFixture(t *testing.T, dir, rawJig, javaContent string) {
+	t.Helper()
+	if err := os.MkdirAll(DraftLeafDir(dir), 0o755); err != nil {
+		t.Fatalf("creating leaf dir: %v", err)
+	}
+	if err := os.WriteFile(DraftLeafJigPath(dir), []byte(rawJig), 0o644); err != nil {
+		t.Fatalf("writing jig.yaml: %v", err)
+	}
+	if javaContent == "" {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(DraftLeafDir(dir), "Widget.java"), []byte(javaContent), 0o644); err != nil {
+		t.Fatalf("writing Widget.java: %v", err)
 	}
 }
 
@@ -80,18 +97,13 @@ func TestPromote_PreservesInlineCommentOnCandidateLine(t *testing.T) {
 		"candidate: true # reviewed by alice, looks correct\n" +
 		"files:\n" +
 		"  - path: Widget.java\n"
-	if err := os.WriteFile(filepath.Join(dir, jig.FileName), []byte(raw), 0o644); err != nil {
-		t.Fatalf("writing jig.yaml: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "Widget.java"), []byte("class Widget {}\n"), 0o644); err != nil {
-		t.Fatalf("writing Widget.java: %v", err)
-	}
+	writeLeafFixture(t, dir, raw, "class Widget {}\n")
 
 	if err := Promote(dir); err != nil {
 		t.Fatalf("Promote returned error: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dir, jig.FileName))
+	got, err := os.ReadFile(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("reading promoted jig.yaml: %v", err)
 	}
@@ -113,18 +125,13 @@ func TestPromote_PreservesCommentAboveCandidateLine(t *testing.T) {
 		"candidate: true\n" +
 		"files:\n" +
 		"  - path: Widget.java\n"
-	if err := os.WriteFile(filepath.Join(dir, jig.FileName), []byte(raw), 0o644); err != nil {
-		t.Fatalf("writing jig.yaml: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "Widget.java"), []byte("class Widget {}\n"), 0o644); err != nil {
-		t.Fatalf("writing Widget.java: %v", err)
-	}
+	writeLeafFixture(t, dir, raw, "class Widget {}\n")
 
 	if err := Promote(dir); err != nil {
 		t.Fatalf("Promote returned error: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dir, jig.FileName))
+	got, err := os.ReadFile(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("reading promoted jig.yaml: %v", err)
 	}
@@ -144,18 +151,13 @@ func TestPromote_PreservesCommentWhenCandidateIsFirstKey(t *testing.T) {
 		"name: widget\n" +
 		"files:\n" +
 		"  - path: Widget.java\n"
-	if err := os.WriteFile(filepath.Join(dir, jig.FileName), []byte(raw), 0o644); err != nil {
-		t.Fatalf("writing jig.yaml: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "Widget.java"), []byte("class Widget {}\n"), 0o644); err != nil {
-		t.Fatalf("writing Widget.java: %v", err)
-	}
+	writeLeafFixture(t, dir, raw, "class Widget {}\n")
 
 	if err := Promote(dir); err != nil {
 		t.Fatalf("Promote returned error: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dir, jig.FileName))
+	got, err := os.ReadFile(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("reading promoted jig.yaml: %v", err)
 	}
@@ -173,18 +175,13 @@ func TestPromote_PreservesHandWrittenComment(t *testing.T) {
 		"candidate: true\n" +
 		"files:\n" +
 		"  - path: Widget.java\n"
-	if err := os.WriteFile(filepath.Join(dir, jig.FileName), []byte(raw), 0o644); err != nil {
-		t.Fatalf("writing jig.yaml: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "Widget.java"), []byte("class Widget {}\n"), 0o644); err != nil {
-		t.Fatalf("writing Widget.java: %v", err)
-	}
+	writeLeafFixture(t, dir, raw, "class Widget {}\n")
 
 	if err := Promote(dir); err != nil {
 		t.Fatalf("Promote returned error: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dir, jig.FileName))
+	got, err := os.ReadFile(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("reading promoted jig.yaml: %v", err)
 	}

@@ -47,7 +47,7 @@ func TestLearnPromote_HappyPath(t *testing.T) {
 		t.Errorf("expected a confirmation message, got:\n%s", out)
 	}
 
-	m, err := jig.Load(filepath.Join(draftDir, jig.FileName))
+	m, err := jig.Load(learn.DraftLeafJigPath(draftDir))
 	if err != nil {
 		t.Fatalf("jig.Load after promote failed: %v", err)
 	}

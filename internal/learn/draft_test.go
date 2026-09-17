@@ -31,7 +31,7 @@ func TestWriteDraft_ValidDraftRoundTripsThroughJigLoad(t *testing.T) {
 		t.Fatalf("WriteDraft returned error: %v", err)
 	}
 
-	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	m, err := jig.Load(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("jig.Load on the written draft failed: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestWriteDraft_VariableGetsAutoDerivedFlag(t *testing.T) {
 	if err := WriteDraft(dir, d, false); err != nil {
 		t.Fatalf("WriteDraft returned error: %v", err)
 	}
-	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	m, err := jig.Load(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("jig.Load failed: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestWriteDraft_VariableKeepsExplicitFlagOverride(t *testing.T) {
 	if err := WriteDraft(dir, d, false); err != nil {
 		t.Fatalf("WriteDraft returned error: %v", err)
 	}
-	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	m, err := jig.Load(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("jig.Load failed: %v", err)
 	}
@@ -329,10 +329,10 @@ func TestWriteDraft_ForceReplacesStaleFilesInsteadOfMerging(t *testing.T) {
 		t.Fatalf("forced WriteDraft returned error: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, "{{ .OldName }}")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(DraftLeafDir(dir), "{{ .OldName }}")); !os.IsNotExist(err) {
 		t.Fatalf("expected the previous run's stale {{ .OldName }} directory to be gone, stat err: %v", err)
 	}
-	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	m, err := jig.Load(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("jig.Load failed: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestWriteDraft_TargetBecomesFilesEntry(t *testing.T) {
 		t.Fatalf("WriteDraft returned error: %v", err)
 	}
 
-	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	m, err := jig.Load(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("jig.Load failed: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestWriteDraft_RawFileBecomesUntemplatedFilesEntry(t *testing.T) {
 		t.Fatalf("WriteDraft returned error: %v", err)
 	}
 
-	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	m, err := jig.Load(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("jig.Load failed: %v", err)
 	}
@@ -390,7 +390,7 @@ func TestWriteDraft_RawFileBecomesUntemplatedFilesEntry(t *testing.T) {
 		t.Fatalf("expected Template to be a non-nil pointer to false, got %+v", m.Files[0].Template)
 	}
 
-	written, err := os.ReadFile(filepath.Join(dir, "tasks", "main.yml"))
+	written, err := os.ReadFile(filepath.Join(DraftLeafDir(dir), "tasks", "main.yml"))
 	if err != nil {
 		t.Fatalf("reading written file: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestWriteDraft_RawFileDoesNotAffectOtherFiles(t *testing.T) {
 		t.Fatalf("WriteDraft returned error: %v", err)
 	}
 
-	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	m, err := jig.Load(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("jig.Load failed: %v", err)
 	}
@@ -444,13 +444,13 @@ func TestWriteDraft_ConsumableByRender(t *testing.T) {
 		t.Fatalf("WriteDraft returned error: %v", err)
 	}
 
-	m, err := jig.Load(filepath.Join(dir, jig.FileName))
+	m, err := jig.Load(DraftLeafJigPath(dir))
 	if err != nil {
 		t.Fatalf("jig.Load failed: %v", err)
 	}
 
 	ctx := render.BuildContext(map[string]string{"ClassName": "Order"}, nil, "order-svc", "", "", "", nil, nil)
-	files, _, err := render.RenderSource(render.Source{Dir: dir, Manifest: m}, ctx)
+	files, _, err := render.RenderSource(render.Source{Dir: DraftLeafDir(dir), Manifest: m}, ctx)
 	if err != nil {
 		t.Fatalf("RenderSource failed: %v", err)
 	}
