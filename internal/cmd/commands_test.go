@@ -449,6 +449,47 @@ func TestLint_InsertOnlyLeafDoesNotTripEmptyRenderCheck(t *testing.T) {
 	}
 }
 
+// A splice-only combination (zero files:, one insert_after against an already-existing target) is
+// real work, not "nothing to do" - it must actually apply, not just preview cleanly (issue #66).
+func TestCreate_InsertOnlyLeafWritesEvenWithZeroFiles(t *testing.T) {
+	root := buildInsertOnlyScaffold(t)
+	outDir := t.TempDir()
+	writeFile(t, filepath.Join(outDir, "svc"), "Controller.java", "class Controller {\n// @scaffold:routes\n}\n")
+
+	out, err := run(t, newCreateCommand, "app", "patch", "svc",
+		"--scaffolding-code="+root, "--output="+outDir)
+	if err != nil {
+		t.Fatalf("expected a splice-only combination to actually write, got: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Spliced into 1 existing file") {
+		t.Errorf("expected the run to report the applied splice, got:\n%s", out)
+	}
+	got := readGenerated(t, outDir, "svc", "Controller.java")
+	if !strings.Contains(got, "newRoute();") {
+		t.Errorf("expected the insert to be spliced despite zero files: entries, got:\n%s", got)
+	}
+}
+
+// A combination that resolves to zero files AND zero inserts still has genuinely nothing to do.
+func TestCreate_TrulyEmptyCombinationStillErrors(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "jig.yaml", "name: root\nvalues:\n  - name: app\n")
+	writeFile(t, filepath.Join(root, "app"), "jig.yaml", "name: app\nvalues:\n  - name: \"1.0\"\n    default: true\n")
+	v := filepath.Join(root, "app", "1.0")
+	writeFile(t, v, "jig.yaml", "name: v\nvalues:\n  - name: templates\n")
+	tmpl := filepath.Join(v, "templates")
+	writeFile(t, tmpl, "jig.yaml", "name: T\nrequired: true\nvalues:\n  - name: empty\n    default: true\n")
+	writeFile(t, filepath.Join(tmpl, "empty"), "jig.yaml", "name: Empty\n")
+
+	_, _, err := createInto(t, root, "app", "empty", "svc")
+	if err == nil {
+		t.Fatal("expected a combination with zero files and zero inserts to still be rejected")
+	}
+	if !strings.Contains(err.Error(), "nothing to write") {
+		t.Errorf("expected a 'nothing to write' error, got: %v", err)
+	}
+}
+
 // TestMain moves the whole test binary into a throwaway directory before anything runs, since
 // `--output` defaults to ".", which for a Go test is the package source directory, and a forgotten
 // flag would otherwise leave generated output committed-adjacent in internal/cmd/.

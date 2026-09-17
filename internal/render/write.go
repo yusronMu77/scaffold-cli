@@ -26,10 +26,6 @@ const (
 // into place only once every file has been written, so a failure partway through never leaves a
 // half-written tree on disk.
 func Write(target string, files []File, policy ExistingPolicy) (written []string, err error) {
-	if len(files) == 0 {
-		return nil, fmt.Errorf("nothing to write: the resolved template produced no files")
-	}
-
 	targetExists := false
 	if info, statErr := os.Stat(target); statErr == nil {
 		if !info.IsDir() {

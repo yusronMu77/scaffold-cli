@@ -130,9 +130,17 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 		policy = render.SkipExisting
 	}
 
-	written, err := render.Write(targetDir, files, policy)
-	if err != nil {
-		return err
+	// A combination can be 100% splices (insert_after/insert_before against an already-existing
+	// file, no files: entries at all) - that's real work, not "nothing to do" (issue #66).
+	if len(files) == 0 && len(inserts) == 0 {
+		return fmt.Errorf("nothing to write: the resolved template produced no files or inserts")
+	}
+	var written []string
+	if len(files) > 0 {
+		written, err = render.Write(targetDir, files, policy)
+		if err != nil {
+			return err
+		}
 	}
 
 	fmt.Fprintf(out, "Generated %s\n", targetDir)
