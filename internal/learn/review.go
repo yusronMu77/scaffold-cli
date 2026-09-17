@@ -52,7 +52,9 @@ type ContentDiff struct {
 // example directory against the draft's own render, for a multi-example learn-review call. Only
 // example-1 is checked byte-for-byte (see Review): a variable's default is drawn from example-1
 // specifically (multiExampleAddendum in prompt.go), so a later example may legitimately differ in
-// content, but should still exist under the same set of paths.
+// content, but should still exist under the same set of paths - unless the varying concept is the
+// file name itself (same-project component examples, e.g. several Controllers), in which case
+// every later example legitimately reports Missing/Extra by design, not as a sign of a bad draft.
 type ExampleStructureResult struct {
 	Dir string
 	// Missing lists paths present in this example but absent from the draft's own render.

@@ -24,7 +24,11 @@ func newLearnReviewCommand() *cobra.Command {
 			"only <example-dir> (the first) is checked byte-for-byte - a later example may\n" +
 			"legitimately have different values, since a variable's default is always drawn\n" +
 			"from the first example specifically - but each later <example-dirN> is still\n" +
-			"checked structurally: it must have the same set of files as the draft's render.\n\n" +
+			"checked structurally: it must have the same set of files as the draft's render.\n" +
+			"For same-project component examples (e.g. three Controllers naming themselves\n" +
+			"after their own entity), every later example is EXPECTED to fail this structural\n" +
+			"check - the varying concept is literally the file name, so paths differ by\n" +
+			"design; that mismatch is not itself a sign of a bad draft.\n\n" +
 			"Runnable by a human before hand-editing the draft, or by an AI agent as a\n" +
 			"self-review pass before promoting it.\n\n" +
 			"`.Name` (the <name> positional `create` supplies on the command line) has no\n" +
