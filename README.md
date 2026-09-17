@@ -215,6 +215,17 @@ per-provider default.
 
 This makes a real call to whichever provider you configure, at that provider's usual cost.
 
+**If you're running `learn` locally without an agent driving it, here are vetted starting points**
+for the `--base-url` path (e.g. an Ollama server) — not an exhaustive model roundup, just four
+that hold up per 2026-09 research:
+
+| Model              | Why                                                                        |
+|--------------------|-----------------------------------------------------------------------------|
+| `devstral:24b`      | Apache 2.0; only one of the four with a published SWE-Bench Verified score (46.8%) |
+| `gpt-oss:20b`       | Apache 2.0, OpenAI's own open-weight model; runs CPU-only on 16GB RAM, no GPU needed |
+| `qwen3-coder:30b`   | Strongest coding quality per VRAM, but needs a 24GB+ GPU or a 32GB Mac         |
+| `granite4:8b`       | IBM; trained explicitly for tool-use and structured JSON output, fits small machines |
+
 **Given two or more paths, `learn` generalizes across all of them in one call** instead of just
 one — useful when a single example under-constrains what's actually invariant vs. variable. A
 variable's `default` is always drawn from the *first* path given, so review the result with
