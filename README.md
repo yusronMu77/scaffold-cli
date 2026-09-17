@@ -248,6 +248,15 @@ this engine — see [Requirements](#requirements). Adding or changing one means 
 worked example) is documented in
 [scaffold-templates' README](https://github.com/yusronMu77/scaffold-templates#readme).
 
+## A note on `go.mod`
+
+Structured manifests (`application.yml`, `package.json`, ...) can opt into `merge:` so a later
+`create` deep-merges into what's already on disk instead of replacing it. `go.mod` is deliberately
+excluded from this: Go's own `go mod tidy` reconciles the `require` block from source imports far
+more correctly than scaffold-cli parsing/merging it as text ever could, and `create` never executes
+anything on your behalf (no `post_hooks`) — run `go mod tidy` manually after adding a new
+entity/component to a go-chi project.
+
 ## License
 
 Distributed under the [MIT License](LICENSE).
