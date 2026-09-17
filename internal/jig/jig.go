@@ -249,7 +249,8 @@ type Jig struct {
 
 	// Merge lists output paths that must be deep-merged when more than one source contributes
 	// them, instead of the later source replacing the earlier one wholesale — application.yml
-	// is the motivating case. Format is inferred from the extension (.yml/.yaml, .json today).
+	// is the motivating case. Format is inferred from the extension/filename (.yml/.yaml, .json,
+	// or requirements.txt today).
 	Merge []string `yaml:"merge,omitempty"`
 
 	// MergePriority orders file-overlay precedence when multiple overlays are selected at once.
