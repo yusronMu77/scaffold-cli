@@ -3,7 +3,6 @@ package learn
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -22,7 +21,7 @@ const candidateKey = "candidate"
 // comments or formatting they just added. Node surgery keeps everything except the one key
 // removed.
 func Promote(draftDir string) error {
-	jigPath := filepath.Join(draftDir, jig.FileName)
+	jigPath := DraftLeafJigPath(draftDir)
 
 	m, err := jig.Load(jigPath)
 	if err != nil {

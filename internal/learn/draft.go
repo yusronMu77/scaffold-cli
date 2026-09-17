@@ -14,6 +14,27 @@ import (
 	"scaffold-engine-go/internal/render"
 )
 
+// DraftVersionName is the single version folder `learn` writes its leaf under, so a promoted
+// draft is a directly registrable top-level scaffold: <output>/jig.yaml is the scaffold-root
+// registry (one `values:` entry, this name, `default: true`), and <output>/<DraftVersionName>/
+// holds the actual leaf (variables/computed/files), matching discovery's existing "a version
+// whose own jig.yaml has no `templates` dimension is used as a leaf directly" fallback
+// (ResolveVersionStructure) - no new discovery mechanism needed (issue #64).
+const DraftVersionName = "default"
+
+// DraftLeafDir returns where a draft's actual leaf content (jig.yaml plus templated files) lives
+// under outputDir.
+func DraftLeafDir(outputDir string) string {
+	return filepath.Join(outputDir, DraftVersionName)
+}
+
+// DraftLeafJigPath returns the path to a draft's leaf jig.yaml under outputDir - the file that
+// carries `candidate:`, `variables:`, `computed:` and `files:`, as opposed to the scaffold-root
+// registry jig.yaml written directly at outputDir.
+func DraftLeafJigPath(outputDir string) string {
+	return filepath.Join(DraftLeafDir(outputDir), jig.FileName)
+}
+
 // windowsInvalidPathChars are the characters Windows forbids in a filename, beyond the path
 // separators. A piped template filter (`{{ .X | kebabcase }}`) is the realistic way one of these
 // would end up in a path - the engine's `computed:` mechanism is the correct escape hatch instead
@@ -247,21 +268,35 @@ func WriteDraft(outputDir string, d *Draft, force bool) error {
 		m.Files = append(m.Files, entry)
 	}
 
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return fmt.Errorf("creating %s: %w", outputDir, err)
+	leafDir := DraftLeafDir(outputDir)
+	if err := os.MkdirAll(leafDir, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", leafDir, err)
+	}
+
+	root := jig.Jig{
+		Name:   d.Name,
+		Values: []jig.Entry{{Name: DraftVersionName, Default: true}},
+	}
+	rootEncoded, err := yaml.Marshal(root)
+	if err != nil {
+		return fmt.Errorf("encoding jig.yaml: %w", err)
+	}
+	rootJigPath := filepath.Join(outputDir, jig.FileName)
+	if err := os.WriteFile(rootJigPath, rootEncoded, 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", rootJigPath, err)
 	}
 
 	encoded, err := yaml.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("encoding jig.yaml: %w", err)
 	}
-	jigPath := filepath.Join(outputDir, jig.FileName)
+	jigPath := DraftLeafJigPath(outputDir)
 	if err := os.WriteFile(jigPath, encoded, 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", jigPath, err)
 	}
 
 	for _, f := range d.Files {
-		dest := filepath.Join(outputDir, filepath.FromSlash(f.Path))
+		dest := filepath.Join(leafDir, filepath.FromSlash(f.Path))
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			return fmt.Errorf("creating directory for %s: %w", f.Path, err)
 		}
@@ -270,6 +305,10 @@ func WriteDraft(outputDir string, d *Draft, force bool) error {
 		}
 	}
 
+	if _, err := jig.Load(rootJigPath); err != nil {
+		return fmt.Errorf("draft's root jig.yaml written but failed self-validation, fix before "+
+			"using it: %w", err)
+	}
 	if _, err := jig.Load(jigPath); err != nil {
 		return fmt.Errorf("draft written but failed self-validation, fix before using it: %w", err)
 	}

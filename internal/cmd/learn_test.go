@@ -96,7 +96,7 @@ func TestLearn_WritesValidDraftAndReportsIt(t *testing.T) {
 	if _, err := jig.Load(filepath.Join(outDir, jig.FileName)); err != nil {
 		t.Fatalf("jig.Load on the written draft failed: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(outDir, "{{ .ClassName }}Controller.java")); err != nil {
+	if _, err := os.Stat(filepath.Join(outDir, learn.DraftVersionName, "{{ .ClassName }}Controller.java")); err != nil {
 		t.Fatalf("expected the templated file on disk: %v", err)
 	}
 
