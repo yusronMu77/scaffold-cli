@@ -144,10 +144,14 @@ func matchPath(pattern, name string) (bool, error) {
 	return false, nil
 }
 
-// mergeStructured deep-merges two documents, choosing the parser from the output path's extension.
-// Maps merge recursively, arrays are replaced wholesale, an explicit null deletes the key, and
-// depth is unlimited; only the encoding differs per format.
+// mergeStructured deep-merges two documents, choosing the merge strategy from the output path's
+// name. requirements.txt gets its own line-based strategy, since pip's format isn't a document any
+// parser can unmarshal; everything else goes through the extension-keyed codec table.
 func mergeStructured(path string, base, override []byte) ([]byte, error) {
+	if isRequirementsFile(path) {
+		return mergeRequirementsTxt(base, override), nil
+	}
+
 	codec, err := codecFor(path)
 	if err != nil {
 		return nil, err
@@ -223,6 +227,100 @@ func mergeValues(base, override any) any {
 		out[k] = v
 	}
 	return out
+}
+
+// isRequirementsFile recognises a pip requirements manifest by name rather than by extension,
+// since `.txt` alone is too broad a signal - an arbitrary text file listed under `merge:` should
+// not be silently parsed as dependency lines.
+func isRequirementsFile(p string) bool {
+	return strings.EqualFold(filepath.Base(p), "requirements.txt")
+}
+
+// requirementsOperators are every version operator pip recognises in a requirements.txt line. `>=`
+// and `<=` must be found before the corresponding bare `>`/`<` would also match, but since both
+// land on the same starting index that ordering doesn't actually change which index wins.
+var requirementsOperators = []string{"==", ">=", "<=", "~=", "!=", ">", "<"}
+
+// requirementsLine is one line of a requirements.txt, already classified. Key is empty for a
+// comment or blank line, which passes through unchanged instead of taking part in the merge.
+type requirementsLine struct {
+	raw string
+	key string
+}
+
+// mergeRequirementsTxt merges two requirements.txt bodies by package name, the same higher-wins
+// precedence mergeValues uses for maps: base keeps its line order and comments, override's pinned
+// version replaces base's on a shared package, and any package only override lists is appended.
+func mergeRequirementsTxt(base, override []byte) []byte {
+	overrideLines := splitRequirementsLines(override)
+	overrideByKey := map[string]string{}
+	var overrideKeys []string
+	for _, l := range overrideLines {
+		if l.key == "" {
+			continue
+		}
+		if _, seen := overrideByKey[l.key]; !seen {
+			overrideKeys = append(overrideKeys, l.key)
+		}
+		overrideByKey[l.key] = l.raw
+	}
+
+	var out []string
+	inBase := map[string]bool{}
+	for _, l := range splitRequirementsLines(base) {
+		if l.key == "" {
+			out = append(out, l.raw)
+			continue
+		}
+		inBase[l.key] = true
+		if winner, ok := overrideByKey[l.key]; ok {
+			out = append(out, winner)
+			continue
+		}
+		out = append(out, l.raw)
+	}
+	for _, key := range overrideKeys {
+		if !inBase[key] {
+			out = append(out, overrideByKey[key])
+		}
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+	return []byte(strings.Join(out, "\n") + "\n")
+}
+
+// splitRequirementsLines splits a requirements.txt body into lines, keying each dependency line by
+// the package name before its first version operator. A blank or comment (`#`) line gets no key.
+func splitRequirementsLines(content []byte) []requirementsLine {
+	text := strings.TrimSuffix(string(content), "\n")
+	if text == "" {
+		return nil
+	}
+	lines := strings.Split(text, "\n")
+	out := make([]requirementsLine, 0, len(lines))
+	for _, raw := range lines {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			out = append(out, requirementsLine{raw: raw})
+			continue
+		}
+		out = append(out, requirementsLine{raw: raw, key: requirementsKey(trimmed)})
+	}
+	return out
+}
+
+// requirementsKey is the package name a dependency line identifies itself by: everything before
+// its first version operator, or the whole (trimmed) line for a bare package with no version pin.
+func requirementsKey(line string) string {
+	cut := len(line)
+	for _, op := range requirementsOperators {
+		if i := strings.Index(line, op); i >= 0 && i < cut {
+			cut = i
+		}
+	}
+	return strings.TrimSpace(line[:cut])
 }
 
 // toStringMap normalises yaml.v3's map shapes. Decoding into `any` yields map[string]any, but

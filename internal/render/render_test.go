@@ -465,6 +465,123 @@ func TestMerge_DeepMergesYAML(t *testing.T) {
 	}
 }
 
+// requirements.txt has no document structure to unmarshal, so it gets its own line-based merge
+// instead of going through the YAML/JSON codec table - same higher-priority-wins precedence,
+// applied per package instead of per map key.
+func TestMerge_DeepMergesRequirementsTxt(t *testing.T) {
+	base := []File{{Path: "requirements.txt", Merge: true, Source: "base",
+		Content: []byte("# base deps\nflask==2.0.0\nrequests\n")}}
+	overlay := []File{{Path: "requirements.txt", Merge: true, Source: "overlay",
+		Content: []byte("flask==3.0.0\ndjango>=4.0\n")}}
+
+	got, err := Merge([][]File{base, overlay})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	out := string(got[0].Content)
+
+	// The higher merge_priority source (the later tree) wins the version pin on a shared package.
+	if !strings.Contains(out, "flask==3.0.0") {
+		t.Errorf("expected the overlay's pin to win, got:\n%s", out)
+	}
+	if strings.Contains(out, "flask==2.0.0") {
+		t.Errorf("expected the base pin to be replaced, not kept alongside it:\n%s", out)
+	}
+	// A package unique to either side survives untouched, pinned or not.
+	for _, want := range []string{"requests", "django>=4.0"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q to survive the merge, got:\n%s", want, out)
+		}
+	}
+	// Comment lines pass through rather than being treated as a dependency.
+	if !strings.Contains(out, "# base deps") {
+		t.Errorf("expected the comment line to survive, got:\n%s", out)
+	}
+}
+
+// The dedup key is the package name before the operator, not the whole line - otherwise changing a
+// pinned version would never collide with the same package's earlier pin.
+func TestMerge_RequirementsTxtDedupesOnPackageNameNotWholeLine(t *testing.T) {
+	base := []File{{Path: "requirements.txt", Merge: true, Source: "base",
+		Content: []byte("requests>=2.0,<3.0\n")}}
+	overlay := []File{{Path: "requirements.txt", Merge: true, Source: "overlay",
+		Content: []byte("requests~=2.31\n")}}
+
+	got, err := Merge([][]File{base, overlay})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	out := string(got[0].Content)
+	if strings.Count(out, "requests") != 1 {
+		t.Fatalf("expected exactly one requests line, got:\n%s", out)
+	}
+	if !strings.Contains(out, "requests~=2.31") {
+		t.Errorf("expected the overlay's pin to win, got:\n%s", out)
+	}
+}
+
+// A bare package name with no version operator at all must be preserved as-is, not rejected or
+// treated as a comment.
+func TestMerge_RequirementsTxtKeepsBarePackageName(t *testing.T) {
+	base := []File{{Path: "requirements.txt", Merge: true, Source: "base",
+		Content: []byte("flask\n")}}
+	overlay := []File{{Path: "requirements.txt", Merge: true, Source: "overlay",
+		Content: []byte("requests==2.31.0\n")}}
+
+	got, err := Merge([][]File{base, overlay})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	out := string(got[0].Content)
+	if !strings.Contains(out, "flask\n") {
+		t.Errorf("expected the bare package name to survive untouched, got:\n%s", out)
+	}
+}
+
+// Two sources declaring entirely different packages must both survive - this is the ordinary
+// "each level adds its own dependency" case, with no conflict to resolve.
+func TestMerge_RequirementsTxtUnionsDisjointPackages(t *testing.T) {
+	base := []File{{Path: "requirements.txt", Merge: true, Source: "base",
+		Content: []byte("fastapi==0.110.0\n")}}
+	overlay := []File{{Path: "requirements.txt", Merge: true, Source: "overlay",
+		Content: []byte("uvicorn==0.29.0\n")}}
+
+	got, err := Merge([][]File{base, overlay})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	out := string(got[0].Content)
+	for _, want := range []string{"fastapi==0.110.0", "uvicorn==0.29.0"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q to survive, got:\n%s", want, out)
+		}
+	}
+}
+
+// Blank lines are neither a dependency nor a comment; they must pass through rather than being
+// dropped or mistaken for the end of the file.
+func TestMerge_RequirementsTxtPreservesBlankLines(t *testing.T) {
+	base := []File{{Path: "requirements.txt", Merge: true, Source: "base",
+		Content: []byte("flask==2.0.0\n\n# section\nrequests\n")}}
+	overlay := []File{{Path: "requirements.txt", Merge: true, Source: "overlay",
+		Content: []byte("django>=4.0\n")}}
+
+	got, err := Merge([][]File{base, overlay})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(got[0].Content), "\n"), "\n")
+	blank := false
+	for _, l := range lines {
+		if l == "" {
+			blank = true
+		}
+	}
+	if !blank {
+		t.Errorf("expected the blank line to survive, got:\n%v", lines)
+	}
+}
+
 // ---------------------------------------------------------------------------------------------
 // Inherited layout rules
 // ---------------------------------------------------------------------------------------------
