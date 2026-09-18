@@ -16,8 +16,9 @@ func newListCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list [<scaffold>] [<template>] [--flag=value ...]",
 		Short: "List available scaffolds, versions, dimensions, and templates",
-		Long: "scaffold list                     -> known scaffolds\n" +
-			"scaffold list <scaffold>          -> available versions, templates, and optional overlays\n" +
+		Long: "scaffold list                       -> known scaffolds\n" +
+			"scaffold list <scaffold>            -> available versions, templates, and optional overlays\n" +
+			"scaffold list <scaffold> --full     -> same, plus every template's own tree and variables\n" +
 			"scaffold list <scaffold> <template> -> full selector tree for that template",
 		DisableFlagParsing: true,
 		RunE:               runList,
@@ -86,7 +87,8 @@ func runList(cmd *cobra.Command, rawArgs []string) error {
 
 	args.markConsumed(engineFlags...)
 	if len(args.positional) == 1 {
-		if err := args.requireAllFlagsConsumed([]string{versionFlag, "scaffolding-code"}); err != nil {
+		args.markConsumed("full")
+		if err := args.requireAllFlagsConsumed([]string{versionFlag, "scaffolding-code", "full"}); err != nil {
 			return err
 		}
 		return listScaffoldDetail(out, args, scaffold, scaffoldPath, version, versionPath)
@@ -107,9 +109,19 @@ func runList(cmd *cobra.Command, rawArgs []string) error {
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", scaffold, version, err)
 	}
-	templatesPath := baseDimension.Path(versionPath)
 
 	template := args.positional[1]
+	return describeTemplate(out, args, scaffoldingCodeRoot, scaffold, version, versionPath, baseDimension, template)
+}
+
+// describeTemplate prints one template's selector tree and declared variables - the per-template
+// detail `scaffold list <scaffold> <template>` shows for one template, reused by --full to show it
+// for every template in one response. Resolving the same plan `create` would build means the
+// variable list here can never drift from what `create` actually accepts.
+func describeTemplate(out io.Writer, args *parsedArgs, root, scaffold, version, versionPath string,
+	baseDimension discovery.Dimension, template string) error {
+
+	templatesPath := baseDimension.Path(versionPath)
 	templateDir, err := discovery.ResolveTemplateDir(templatesPath, template)
 	if err != nil {
 		return err
@@ -121,9 +133,7 @@ func runList(cmd *cobra.Command, rawArgs []string) error {
 	fmt.Fprintf(out, "%s %s %s/%s:\n", scaffold, version, baseDimension.Name, template)
 	printTree(out, tree, "  ")
 
-	// Resolve the same plan `create` would build, so the variable list here can never drift from
-	// what `create` actually accepts.
-	return printVariables(out, args, scaffoldingCodeRoot, scaffold, template)
+	return printVariables(out, args, root, scaffold, template)
 }
 
 // printVariables resolves the chain the way `create` would and lists the variables it declares.
@@ -259,6 +269,27 @@ func listScaffoldDetail(out io.Writer, args *parsedArgs, scaffold, scaffoldPath,
 	}
 	if !any {
 		fmt.Fprintln(out, "    (none)")
+	}
+
+	// --full expands every template's own tree and variables in this same response, collapsing
+	// what would otherwise take one `list <scaffold> <template>` call per template. printVariables
+	// builds its own probe straight from these flags, so "full" is dropped here rather than marked
+	// consumed - it would otherwise reach that inner probe as a still-unknown flag.
+	if args.value("full") == "true" {
+		root := filepath.Dir(scaffoldPath)
+		withoutFull := map[string]string{}
+		for k, v := range args.flags {
+			if k != "full" {
+				withoutFull[k] = v
+			}
+		}
+		for _, t := range baseDimension.Values {
+			fmt.Fprintln(out)
+			probe := &parsedArgs{flags: withoutFull, consumed: map[string]bool{}}
+			if err := describeTemplate(out, probe, root, scaffold, version, versionPath, baseDimension, t); err != nil {
+				fmt.Fprintf(out, "%s: %s\n", t, err)
+			}
+		}
 	}
 	return nil
 }

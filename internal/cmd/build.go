@@ -43,7 +43,7 @@ func runVerifications(out io.Writer, files []render.File, checks []render.Verifi
 	}
 	defer os.RemoveAll(dir)
 
-	if _, err := render.Write(dir, files, render.Overwrite); err != nil {
+	if _, _, err := render.Write(dir, files, render.Overwrite); err != nil {
 		return result, fmt.Errorf("writing the project to build: %w", err)
 	}
 

@@ -24,12 +24,14 @@ const (
 // Write commits the rendered tree to <target> transactionally: everything is staged in a sibling
 // temp directory (so the final move stays on one filesystem, where rename is atomic) and moved
 // into place only once every file has been written, so a failure partway through never leaves a
-// half-written tree on disk.
-func Write(target string, files []File, policy ExistingPolicy) (written []string, err error) {
+// half-written tree on disk. finalContent holds each written path's actual final bytes, keyed by
+// path - the post-merge result for a --skip-existing merge, not the pre-merge render.
+func Write(target string, files []File, policy ExistingPolicy) (written []string, finalContent map[string][]byte, err error) {
+	finalContent = map[string][]byte{}
 	targetExists := false
 	if info, statErr := os.Stat(target); statErr == nil {
 		if !info.IsDir() {
-			return nil, fmt.Errorf("%s already exists and is not a directory", target)
+			return nil, nil, fmt.Errorf("%s already exists and is not a directory", target)
 		}
 		targetExists = true
 	}
@@ -40,7 +42,7 @@ func Write(target string, files []File, policy ExistingPolicy) (written []string
 	// leftover directory just because it happens to already exist (issue #53).
 	if targetExists && policy == FailIfExists {
 		if colliding := collidingPaths(target, files); len(colliding) > 0 {
-			return nil, fmt.Errorf("%d file(s) already exist under %s:\n  %s\nuse --force to "+
+			return nil, nil, fmt.Errorf("%d file(s) already exist under %s:\n  %s\nuse --force to "+
 				"overwrite them, or --skip-existing to keep the files that are already there",
 				len(colliding), target, strings.Join(colliding, "\n  "))
 		}
@@ -48,11 +50,11 @@ func Write(target string, files []File, policy ExistingPolicy) (written []string
 
 	parent := filepath.Dir(target)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return nil, fmt.Errorf("creating output parent %s: %w", parent, err)
+		return nil, nil, fmt.Errorf("creating output parent %s: %w", parent, err)
 	}
 	staging, err := os.MkdirTemp(parent, ".scaffold-staging-*")
 	if err != nil {
-		return nil, fmt.Errorf("creating staging directory: %w", err)
+		return nil, nil, fmt.Errorf("creating staging directory: %w", err)
 	}
 	defer os.RemoveAll(staging)
 
@@ -70,36 +72,37 @@ func Write(target string, files []File, policy ExistingPolicy) (written []string
 				}
 				merged, err := mergeStructured(f.Path, onDisk, f.Content)
 				if err != nil {
-					return nil, fmt.Errorf("merging %s into the copy already on disk: %w", f.Path, err)
+					return nil, nil, fmt.Errorf("merging %s into the copy already on disk: %w", f.Path, err)
 				}
 				f.Content = merged
 			}
 		}
 		dest := filepath.Join(staging, filepath.FromSlash(f.Path))
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return nil, fmt.Errorf("creating directory for %s: %w", f.Path, err)
+			return nil, nil, fmt.Errorf("creating directory for %s: %w", f.Path, err)
 		}
 		mode := f.Mode
 		if mode == 0 {
 			mode = 0o644
 		}
 		if err := os.WriteFile(dest, f.Content, mode); err != nil {
-			return nil, fmt.Errorf("writing %s: %w", f.Path, err)
+			return nil, nil, fmt.Errorf("writing %s: %w", f.Path, err)
 		}
 		written = append(written, f.Path)
+		finalContent[f.Path] = f.Content
 	}
 
 	// Commit. A fresh target is a single atomic rename; an existing tree is merged file by file.
 	if !targetExists {
 		if err := os.Rename(staging, target); err != nil {
-			return nil, fmt.Errorf("moving generated project into %s: %w", target, err)
+			return nil, nil, fmt.Errorf("moving generated project into %s: %w", target, err)
 		}
-		return written, nil
+		return written, finalContent, nil
 	}
 	if err := moveTree(staging, target); err != nil {
-		return nil, fmt.Errorf("merging generated files into %s: %w", target, err)
+		return nil, nil, fmt.Errorf("merging generated files into %s: %w", target, err)
 	}
-	return written, nil
+	return written, finalContent, nil
 }
 
 // collidingPaths returns, sorted, every file in files whose resolved destination under target

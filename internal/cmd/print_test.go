@@ -34,6 +34,86 @@ func TestCreate_PrintWritesNothing(t *testing.T) {
 	}
 }
 
+// --print-written is the one inspection-like flag that does write: a caller wanting both the
+// write and a verifiable transcript of what landed gets both in one call (issue #91).
+func TestCreate_PrintWrittenWritesAndShowsContent(t *testing.T) {
+	root := buildScaffoldingCode(t)
+	out, outDir, err := createInto(t, root, "fw", "services", "payment", "--function=web", "--print-written")
+	if err != nil {
+		t.Fatalf("--print-written returned error: %v", err)
+	}
+	if !strings.Contains(out, "==> pom.xml <==") || !strings.Contains(out, "<artifactId>payment</artifactId>") {
+		t.Errorf("expected the written content to be echoed, got:\n%s", out)
+	}
+	got := readGenerated(t, outDir, "payment", "pom.xml")
+	if !strings.Contains(got, "<artifactId>payment</artifactId>") {
+		t.Errorf("expected the file to actually be written to disk, got:\n%s", got)
+	}
+}
+
+// The printed content must be the true final bytes, not the raw pre-merge render - a
+// --skip-existing rerun against a `merge:`-registered file deep-merges before writing.
+func TestCreate_PrintWrittenReflectsSkipExistingMerge(t *testing.T) {
+	root := buildMergeableConfigScaffold(t)
+	outDir := t.TempDir()
+
+	if _, err := run(t, newCreateCommand, "app", "cfg", "svc1",
+		"--key=a", "--val=1", "--scaffolding-code="+root, "--output="+outDir); err != nil {
+		t.Fatalf("first create returned error: %v", err)
+	}
+	out, err := run(t, newCreateCommand, "app", "cfg", "svc2",
+		"--key=b", "--val=2", "--scaffolding-code="+root, "--output="+outDir,
+		"--skip-existing", "--print-written")
+	if err != nil {
+		t.Fatalf("second create (--skip-existing --print-written) returned error: %v", err)
+	}
+	if !strings.Contains(out, "a: 1") || !strings.Contains(out, "b: 2") {
+		t.Errorf("expected the printed content to be the merged result, not the raw render, got:\n%s", out)
+	}
+}
+
+// A spliced file's printed content must be the full post-splice file, since ApplyInserts runs
+// after Write commits - printing the pre-splice render would show stale content for it.
+func TestCreate_PrintWrittenReflectsSplice(t *testing.T) {
+	root := buildInsertScaffold(t)
+	out, outDir, err := createInto(t, root, "app", "web", "svc", "--print-written")
+	if err != nil {
+		t.Fatalf("create --print-written returned error: %v", err)
+	}
+	want := "class Controller {\n// @scaffold:routes\nnewRoute();\n}\n"
+	if !strings.Contains(out, "==> Controller.java <==") || !strings.Contains(out, want) {
+		t.Errorf("expected the printed content to be the full post-splice file, got:\n%s", out)
+	}
+	got := readGenerated(t, outDir, "svc", "Controller.java")
+	if got != want {
+		t.Errorf("expected the file on disk to match, got:\n%s", got)
+	}
+}
+
+func TestCreate_PrintWrittenRejectsCombinationWithPrint(t *testing.T) {
+	root := buildScaffoldingCode(t)
+	_, outDir, err := createInto(t, root, "fw", "services", "payment", "--function=web",
+		"--print-written", "--print")
+	if err == nil {
+		t.Fatal("expected an error combining --print-written with --print")
+	}
+	if _, statErr := os.Stat(filepath.Join(outDir, "payment")); !os.IsNotExist(statErr) {
+		t.Error("expected nothing to be written when the combination is rejected")
+	}
+}
+
+func TestCreate_PrintWrittenRejectsCombinationWithDryRun(t *testing.T) {
+	root := buildScaffoldingCode(t)
+	_, outDir, err := createInto(t, root, "fw", "services", "payment", "--function=web",
+		"--print-written", "--dry-run")
+	if err == nil {
+		t.Fatal("expected an error combining --print-written with --dry-run")
+	}
+	if _, statErr := os.Stat(filepath.Join(outDir, "payment")); !os.IsNotExist(statErr) {
+		t.Error("expected nothing to be written when the combination is rejected")
+	}
+}
+
 // Partials reach the CLI, not just the render package: a fragment declared at the framework level
 // is usable by a leaf template several levels down, with nothing in between mentioning it.
 func TestCreate_PartialsAreAvailableAcrossTheChain(t *testing.T) {

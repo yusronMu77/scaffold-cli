@@ -15,8 +15,9 @@ import (
 // run in source order, and each sees the file as a previous insert into the same path left it, so
 // a later insert may anchor off text an earlier one just added. Applying is skipped, and the path
 // reported under skipped, when the file already contains the insert's content verbatim - so
-// running the same `create` twice never duplicates the spliced block.
-func ApplyInserts(target string, inserts []Insert) (applied, skipped []string, err error) {
+// running the same `create` twice never duplicates the spliced block. final holds each spliced
+// path's complete post-splice content, keyed by path, for callers that need to echo it back.
+func ApplyInserts(target string, inserts []Insert) (applied, skipped []string, final map[string][]byte, err error) {
 	cache := map[string][]byte{}
 
 	for _, ins := range inserts {
@@ -25,7 +26,7 @@ func ApplyInserts(target string, inserts []Insert) (applied, skipped []string, e
 			abs := filepath.Join(target, filepath.FromSlash(ins.Path))
 			content, err = os.ReadFile(abs)
 			if err != nil {
-				return applied, skipped, fmt.Errorf(
+				return applied, skipped, nil, fmt.Errorf(
 					"%s declares insert_%s against %s, but it does not exist - inserting only "+
 						"works against a file that is already there (e.g. re-running create "+
 						"against an already-generated project), not one this run just created: %w",
@@ -45,7 +46,7 @@ func ApplyInserts(target string, inserts []Insert) (applied, skipped []string, e
 
 		updated, err := spliceAtAnchor(content, ins)
 		if err != nil {
-			return applied, skipped, fmt.Errorf("%s: %s: %w", ins.Source, ins.Path, err)
+			return applied, skipped, nil, fmt.Errorf("%s: %s: %w", ins.Source, ins.Path, err)
 		}
 		cache[ins.Path] = updated
 		applied = append(applied, ins.Path)
@@ -54,10 +55,10 @@ func ApplyInserts(target string, inserts []Insert) (applied, skipped []string, e
 	for relPath, content := range cache {
 		abs := filepath.Join(target, filepath.FromSlash(relPath))
 		if err := writeFileInPlace(abs, content); err != nil {
-			return applied, skipped, err
+			return applied, skipped, nil, err
 		}
 	}
-	return applied, skipped, nil
+	return applied, skipped, cache, nil
 }
 
 func normalizeNewlines(b []byte) []byte {

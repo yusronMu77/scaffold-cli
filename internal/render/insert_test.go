@@ -11,7 +11,7 @@ func TestApplyInserts_SpliceAfterAnchor(t *testing.T) {
 	target := t.TempDir()
 	writeFile(t, target, "Controller.java", "class Controller {\n// @scaffold:routes\n}\n")
 
-	applied, skipped, err := ApplyInserts(target, []Insert{
+	applied, skipped, _, err := ApplyInserts(target, []Insert{
 		{Path: "Controller.java", Content: []byte("newRoute();\n"), Anchor: "// @scaffold:routes", After: true, Source: "leaf"},
 	})
 	if err != nil {
@@ -35,7 +35,7 @@ func TestApplyInserts_SpliceBeforeAnchor(t *testing.T) {
 	target := t.TempDir()
 	writeFile(t, target, "Controller.java", "class Controller {\n}\n")
 
-	_, _, err := ApplyInserts(target, []Insert{
+	_, _, _, err := ApplyInserts(target, []Insert{
 		{Path: "Controller.java", Content: []byte("newRoute();\n"), Anchor: "}", After: false, Source: "leaf"},
 	})
 	if err != nil {
@@ -53,7 +53,7 @@ func TestApplyInserts_AnchorNotFoundIsAnError(t *testing.T) {
 	target := t.TempDir()
 	writeFile(t, target, "Controller.java", "class Controller {}\n")
 
-	_, _, err := ApplyInserts(target, []Insert{
+	_, _, _, err := ApplyInserts(target, []Insert{
 		{Path: "Controller.java", Content: []byte("x\n"), Anchor: "// nope", After: true, Source: "leaf"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "not found") {
@@ -65,7 +65,7 @@ func TestApplyInserts_AmbiguousAnchorIsAnError(t *testing.T) {
 	target := t.TempDir()
 	writeFile(t, target, "Controller.java", "// mark\nclass Controller {\n// mark\n}\n")
 
-	_, _, err := ApplyInserts(target, []Insert{
+	_, _, _, err := ApplyInserts(target, []Insert{
 		{Path: "Controller.java", Content: []byte("x\n"), Anchor: "// mark", After: true, Source: "leaf"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "matches 2 lines") {
@@ -76,7 +76,7 @@ func TestApplyInserts_AmbiguousAnchorIsAnError(t *testing.T) {
 func TestApplyInserts_MissingTargetFileIsAnError(t *testing.T) {
 	target := t.TempDir()
 
-	_, _, err := ApplyInserts(target, []Insert{
+	_, _, _, err := ApplyInserts(target, []Insert{
 		{Path: "Controller.java", Content: []byte("x\n"), Anchor: "// mark", After: true, Source: "leaf"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "does not exist") {
@@ -92,10 +92,10 @@ func TestApplyInserts_IdempotentOnRepeat(t *testing.T) {
 	ins := []Insert{
 		{Path: "Controller.java", Content: []byte("newRoute();\n"), Anchor: "// @scaffold:routes", After: true, Source: "leaf"},
 	}
-	if _, _, err := ApplyInserts(target, ins); err != nil {
+	if _, _, _, err := ApplyInserts(target, ins); err != nil {
 		t.Fatalf("first ApplyInserts: %v", err)
 	}
-	applied, skipped, err := ApplyInserts(target, ins)
+	applied, skipped, _, err := ApplyInserts(target, ins)
 	if err != nil {
 		t.Fatalf("second ApplyInserts: %v", err)
 	}
@@ -119,10 +119,10 @@ func TestApplyInserts_IdempotentAcrossMixedLineEndings(t *testing.T) {
 	ins := []Insert{
 		{Path: "Controller.java", Content: []byte("newRoute();\n"), Anchor: "// @scaffold:routes", After: true, Source: "leaf"},
 	}
-	if _, _, err := ApplyInserts(target, ins); err != nil {
+	if _, _, _, err := ApplyInserts(target, ins); err != nil {
 		t.Fatalf("first ApplyInserts: %v", err)
 	}
-	applied, skipped, err := ApplyInserts(target, ins)
+	applied, skipped, _, err := ApplyInserts(target, ins)
 	if err != nil {
 		t.Fatalf("second ApplyInserts: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestApplyInserts_RegexAnchor(t *testing.T) {
 	target := t.TempDir()
 	writeFile(t, target, "Controller.java", "class Controller {\n// route: /a\n}\n")
 
-	_, _, err := ApplyInserts(target, []Insert{
+	_, _, _, err := ApplyInserts(target, []Insert{
 		{Path: "Controller.java", Content: []byte("// route: /b\n"), Anchor: `// route: /\w+`, Regex: true, After: true, Source: "leaf"},
 	})
 	if err != nil {
@@ -156,7 +156,7 @@ func TestApplyInserts_PreservesCRLF(t *testing.T) {
 	target := t.TempDir()
 	writeFile(t, target, "Controller.java", "class Controller {\r\n// @scaffold:routes\r\n}\r\n")
 
-	_, _, err := ApplyInserts(target, []Insert{
+	_, _, _, err := ApplyInserts(target, []Insert{
 		{Path: "Controller.java", Content: []byte("newRoute();\n"), Anchor: "// @scaffold:routes", After: true, Source: "leaf"},
 	})
 	if err != nil {
@@ -174,7 +174,7 @@ func TestApplyInserts_ChainedInsertsSeePriorResult(t *testing.T) {
 	target := t.TempDir()
 	writeFile(t, target, "Controller.java", "class Controller {\n// @scaffold:routes\n}\n")
 
-	_, _, err := ApplyInserts(target, []Insert{
+	_, _, _, err := ApplyInserts(target, []Insert{
 		{Path: "Controller.java", Content: []byte("// @scaffold:routes:new\n"), Anchor: "// @scaffold:routes", After: true, Source: "base"},
 		{Path: "Controller.java", Content: []byte("newRoute();\n"), Anchor: "// @scaffold:routes:new", After: true, Source: "overlay"},
 	})
