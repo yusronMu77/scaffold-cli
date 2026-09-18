@@ -565,6 +565,21 @@ func TestList_CategoryTree(t *testing.T) {
 	}
 }
 
+// --full collapses what would otherwise take one `list <scaffold> <template>` call per template
+// into the single `list <scaffold> --full` response (issue #91).
+func TestList_FullExpandsEveryTemplate(t *testing.T) {
+	root := buildScaffoldingCode(t)
+	out, err := run(t, newListCommand, "fw", "--full", "--scaffolding-code="+root)
+	if err != nil {
+		t.Fatalf("list fw --full returned error: %v", err)
+	}
+	for _, want := range []string{"fw 1.0 templates/services:", "fw 1.0 templates/parent:", "--function", "--package"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the output, got:\n%s", want, out)
+		}
+	}
+}
+
 // createInto runs `create` writing into a throwaway directory, and returns the output plus the
 // resulting target path. Tests must never write into the process working directory - that is the
 // package source tree.

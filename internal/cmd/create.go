@@ -19,7 +19,7 @@ import (
 // selector/overlay/variable flags that come from manifest content.
 var engineFlags = []string{
 	"output", "scaffolding-code",
-	"force", "skip-existing", "dry-run", "explain", "print", "values",
+	"force", "skip-existing", "dry-run", "explain", "print", "print-written", "values",
 }
 
 func newCreateCommand() *cobra.Command {
@@ -47,6 +47,11 @@ func newCreateCommand() *cobra.Command {
 			"    --dry-run   which files would be produced\n" +
 			"    --print     what is actually in them, to stdout\n" +
 			"    --explain   which level contributed each one, and what overrode what\n\n" +
+			"--print-written is the one mode that does write: it performs a normal create and then\n" +
+			"echoes the exact final content of every file written or spliced, so a caller wanting\n" +
+			"both the write and a verifiable transcript of what landed gets both in one call instead\n" +
+			"of a --print pass followed by a separate create. It cannot be combined with --print,\n" +
+			"--dry-run or --explain.\n\n" +
 			"--skip-existing leaves an already-existing plain file untouched, except a file the\n" +
 			"template registers under `merge:` - that one is deep-merged with the copy already on\n" +
 			"disk instead, so a second create against the same --output can still add a new\n" +
@@ -110,6 +115,13 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 	}
 	out := cmd.OutOrStdout()
 
+	printWritten := args.value("print-written") == "true"
+	if printWritten && (args.value("print") == "true" || args.value("dry-run") == "true" ||
+		args.value("explain") == "true") {
+		return fmt.Errorf("--print-written writes the files and then prints them; it cannot be " +
+			"combined with --print/--dry-run/--explain, which write nothing - pick one")
+	}
+
 	if args.value("print") == "true" {
 		printRendered(out, files)
 		printInserts(out, inserts)
@@ -140,8 +152,9 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 		return fmt.Errorf("nothing to write: the resolved template produced no files or inserts")
 	}
 	var written []string
+	var finalContent map[string][]byte
 	if len(files) > 0 {
-		written, err = render.Write(targetDir, files, policy)
+		written, finalContent, err = render.Write(targetDir, files, policy)
 		if err != nil {
 			return err
 		}
@@ -153,11 +166,13 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 	}
 	fmt.Fprintf(out, "\n%d file(s) written.\n", len(written))
 
+	var insertFinal map[string][]byte
 	if len(inserts) > 0 {
-		applied, skipped, err := render.ApplyInserts(targetDir, inserts)
+		applied, skipped, final, err := render.ApplyInserts(targetDir, inserts)
 		if err != nil {
 			return err
 		}
+		insertFinal = final
 		if len(applied) > 0 {
 			fmt.Fprintf(out, "\nSpliced into %d existing file(s):\n", len(applied))
 			for _, p := range applied {
@@ -170,6 +185,11 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 				fmt.Fprintf(out, "  %s\n", p)
 			}
 		}
+	}
+
+	if printWritten {
+		fmt.Fprintln(out)
+		printWrittenContent(out, written, finalContent, insertFinal)
 	}
 	return nil
 }
@@ -378,16 +398,46 @@ func validFlagsFor(dimensions []discovery.Dimension, walk *discovery.WalkResult,
 
 // printRendered writes every rendered file to stdout instead of to disk, so a template can be
 // edited and re-run without a scratch directory - it answers "what is actually in them", as
-// opposed to `--dry-run` ("which files") and `--explain` ("who contributed them"). The
-// `==> path <==` marker follows tail(1)'s convention so it cannot be mistaken for file content.
+// opposed to `--dry-run` ("which files") and `--explain` ("who contributed them").
 func printRendered(out io.Writer, files []render.File) {
 	for _, f := range files {
-		fmt.Fprintf(out, "==> %s <==\n", f.Path)
-		out.Write(f.Content)
-		if len(f.Content) > 0 && f.Content[len(f.Content)-1] != '\n' {
-			fmt.Fprintln(out)
-		}
+		printOneFile(out, f.Path, f.Content)
+	}
+}
+
+// printOneFile writes one file's content to stdout under a `==> path <==` marker, following
+// tail(1)'s convention so it cannot be mistaken for file content.
+func printOneFile(out io.Writer, path string, content []byte) {
+	fmt.Fprintf(out, "==> %s <==\n", path)
+	out.Write(content)
+	if len(content) > 0 && content[len(content)-1] != '\n' {
 		fmt.Fprintln(out)
+	}
+	fmt.Fprintln(out)
+}
+
+// printWrittenContent echoes the true final bytes of everything --print-written just committed to
+// disk. writtenPaths preserves render.Write's own order; a path also present in insertFinal was
+// spliced after the write committed, so that version supersedes whatever Write produced for it.
+func printWrittenContent(out io.Writer, writtenPaths []string, content, insertFinal map[string][]byte) {
+	seen := map[string]bool{}
+	for _, path := range writtenPaths {
+		b := content[path]
+		if final, ok := insertFinal[path]; ok {
+			b = final
+		}
+		printOneFile(out, path, b)
+		seen[path] = true
+	}
+	var extra []string
+	for path := range insertFinal {
+		if !seen[path] {
+			extra = append(extra, path)
+		}
+	}
+	sort.Strings(extra)
+	for _, path := range extra {
+		printOneFile(out, path, insertFinal[path])
 	}
 }
 

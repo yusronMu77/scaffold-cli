@@ -125,6 +125,7 @@ register your first scaffold; pass `--force` to overwrite an existing `jig.yaml`
 ```bash
 scaffold list                        # known scaffolds
 scaffold list <scaffold>             # versions, templates, and optional dimensions
+scaffold list <scaffold> --full      # same, plus every template's own tree and variables
 scaffold list <scaffold> <template>  # full selector tree and variables for that template
 ```
 
@@ -162,6 +163,11 @@ Useful flags for inspecting before you write anything:
 | `--dry-run`  | Which files would be produced                             |
 | `--print`    | What is actually in them, printed to stdout                |
 | `--explain`  | Which level of the inheritance chain contributed each file |
+
+`--print-written` is the one mode that does write: it performs a normal create and then echoes
+the exact final content of every file written or spliced, so a caller wanting both the write and a
+verifiable transcript of what landed gets both in one call instead of a `--print` pass followed by
+a separate `create`. It cannot be combined with `--dry-run`/`--print`/`--explain`.
 
 ### `lint` — check that the templates repository is healthy
 
