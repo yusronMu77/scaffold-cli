@@ -59,7 +59,11 @@ func runList(cmd *cobra.Command, rawArgs []string) error {
 			"got %d positional arguments, at most 2 are accepted", len(args.positional))
 	}
 
-	scaffoldingCodeRoot := resolveScaffoldingCodeRoot(args.value("scaffolding-code"))
+	scaffoldingCodeFlag, err := args.requireValue("scaffolding-code")
+	if err != nil {
+		return err
+	}
+	scaffoldingCodeRoot := resolveScaffoldingCodeRoot(scaffoldingCodeFlag)
 	out := cmd.OutOrStdout()
 
 	if len(args.positional) == 0 {

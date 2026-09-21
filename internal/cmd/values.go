@@ -201,7 +201,11 @@ func versionIsLeaf(args *parsedArgs, scaffold string) bool {
 	if scaffold == "" {
 		return false
 	}
-	root := resolveScaffoldingCodeRoot(args.value("scaffolding-code"))
+	scaffoldingCodeFlag, err := args.requireValue("scaffolding-code")
+	if err != nil {
+		return false
+	}
+	root := resolveScaffoldingCodeRoot(scaffoldingCodeFlag)
 	scaffoldPath, err := discovery.ResolveScaffoldPath(root, scaffold)
 	if err != nil {
 		return false

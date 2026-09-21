@@ -109,6 +109,42 @@ func TestRequireAllFlagsConsumed_PassesWhenAllUsed(t *testing.T) {
 	}
 }
 
+// requireValue must reject the bare boolean form for a flag that's known to always need a real
+// value, instead of silently handing back the literal string "true" (issue #93).
+func TestRequireValue_RejectsBareFlag(t *testing.T) {
+	args := mustParseArgs(t, []string{"--output", "uid2-generator"})
+
+	if _, err := args.requireValue("output"); err == nil {
+		t.Fatal("expected an error for a bare --output, got nil")
+	} else if !strings.Contains(err.Error(), "--output") {
+		t.Errorf("expected the error to name --output, got: %v", err)
+	}
+}
+
+func TestRequireValue_PassesWithEqualsForm(t *testing.T) {
+	args := mustParseArgs(t, []string{"--output=uid2-generator"})
+
+	v, err := args.requireValue("output")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if v != "uid2-generator" {
+		t.Errorf(`expected "uid2-generator", got %q`, v)
+	}
+}
+
+func TestRequireValue_AbsentFlagIsNotAnError(t *testing.T) {
+	args := mustParseArgs(t, []string{})
+
+	v, err := args.requireValue("output")
+	if err != nil {
+		t.Fatalf("expected no error for an absent flag, got: %v", err)
+	}
+	if v != "" {
+		t.Errorf("expected empty value, got %q", v)
+	}
+}
+
 // mustParseArgs is parseArgs for the many tests that pass syntactically valid input.
 func mustParseArgs(t *testing.T, args []string) *parsedArgs {
 	t.Helper()
