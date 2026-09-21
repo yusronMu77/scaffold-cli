@@ -43,6 +43,14 @@ func newLearnCommand() *cobra.Command {
 			"with `scaffold learn-review <draft-dir> <path1> <path2> ...` afterward, passing every\n" +
 			"example path in the same order (learn-review checks <path1> byte-for-byte and every\n" +
 			"later path structurally). A single <path> behaves exactly as it always has.\n\n" +
+			"Feeding a real-usage correction back into an already-registered template reuses this\n" +
+			"same multi-path form - no separate command or flag: pass the hand-corrected project\n" +
+			"folder FIRST and the template's original reference example folder SECOND\n" +
+			"(`scaffold learn <corrected> <original> --output=<dir>`), so the correction's values\n" +
+			"become the new defaults while the original is only checked structurally (same file\n" +
+			"paths). The result is still a plain candidate draft - `learn-review`/`learn-promote`\n" +
+			"gate it exactly like any other, so a bad correction is caught before it ever reaches\n" +
+			"`create`.\n\n" +
 			"Provider is chosen by --provider=anthropic|openai, or auto-detected from whichever of\n" +
 			"ANTHROPIC_API_KEY / OPENAI_API_KEY is set. --base-url points the openai provider at\n" +
 			"any compatible endpoint (Groq, OpenRouter, a local server, ...).\n\n" +
