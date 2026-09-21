@@ -82,7 +82,11 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 		return err
 	}
 
-	scaffoldingCodeRoot := resolveScaffoldingCodeRoot(args.value("scaffolding-code"))
+	scaffoldingCodeFlag, err := args.requireValue("scaffolding-code")
+	if err != nil {
+		return err
+	}
+	scaffoldingCodeRoot := resolveScaffoldingCodeRoot(scaffoldingCodeFlag)
 
 	// The inheritance chain runs the full depth of the tree, outermost first; every level may
 	// contribute files, dependencies and variables, and deeper levels win. Resolving it lives in
@@ -102,7 +106,10 @@ func runCreate(cmd *cobra.Command, rawArgs []string) error {
 		return err
 	}
 
-	output := args.value("output")
+	output, err := args.requireValue("output")
+	if err != nil {
+		return err
+	}
 	if output == "" {
 		output = "."
 	}

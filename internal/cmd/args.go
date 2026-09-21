@@ -12,7 +12,11 @@ type parsedArgs struct {
 	positional []string
 	flags      map[string]string
 	consumed   map[string]bool
-	help       bool
+	// bareFlags marks a flag given as `--key` with no `=`, so its value defaulted to the literal
+	// string "true". Needed to tell that apart from an explicit `--key=true` for flags (like
+	// --output) that are known to always need a real value.
+	bareFlags map[string]bool
+	help      bool
 	// valuesFiles are the -f/--values paths, in the order given. Repeatable, so it can't live in
 	// the flags map; later files override earlier ones.
 	valuesFiles []string
@@ -46,8 +50,9 @@ var engineValueFlags = map[string]string{
 // following positional.
 func parseArgs(args []string) (*parsedArgs, error) {
 	p := &parsedArgs{
-		flags:    map[string]string{},
-		consumed: map[string]bool{},
+		flags:     map[string]string{},
+		consumed:  map[string]bool{},
+		bareFlags: map[string]bool{},
 	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -77,6 +82,8 @@ func parseArgs(args []string) (*parsedArgs, error) {
 		value := "true"
 		if eq := strings.Index(key, "="); eq >= 0 {
 			key, value = key[:eq], key[eq+1:]
+		} else {
+			p.bareFlags[key] = true
 		}
 		if key == "help" || key == "h" {
 			p.help = true
@@ -113,6 +120,22 @@ func (p *parsedArgs) get(key string) (string, bool) {
 func (p *parsedArgs) value(key string) string {
 	v, _ := p.get(key)
 	return v
+}
+
+// requireValue is value() for flags that must always carry a real value (e.g. --output), never a
+// bare boolean. It errors on the bare `--key` form instead of silently returning the literal
+// string "true", which previously let `--output foo` (space-separated) write into a stray `true/`
+// directory instead of failing loudly.
+func (p *parsedArgs) requireValue(key string) (string, error) {
+	v, ok := p.get(key)
+	if !ok {
+		return "", nil
+	}
+	if p.bareFlags[key] {
+		return "", fmt.Errorf("--%s needs a value, e.g. --%s=<value> (a space-separated \"--%s "+
+			"<value>\" is not supported and was about to be parsed as a boolean)", key, key, key)
+	}
+	return v, nil
 }
 
 // markConsumed records a flag as handled even when its value was not read through get(),

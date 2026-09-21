@@ -88,7 +88,11 @@ func runLint(cmd *cobra.Command, rawArgs []string) error {
 	if err := args.requireAllFlagsConsumed(lintFlags); err != nil {
 		return err
 	}
-	root := resolveScaffoldingCodeRoot(args.value("scaffolding-code"))
+	scaffoldingCodeFlag, err := args.requireValue("scaffolding-code")
+	if err != nil {
+		return err
+	}
+	root := resolveScaffoldingCodeRoot(scaffoldingCodeFlag)
 	out := cmd.OutOrStdout()
 	build := args.value("build") == "true"
 

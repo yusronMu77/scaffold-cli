@@ -142,15 +142,23 @@ func parseLearnArgs(args *parsedArgs) (learnArgs, error) {
 			"learn takes at least one positional argument: the example folder to learn from " +
 				"(two or more learns from all of them at once, generalizing across instances)")
 	}
+	outputDir, err := args.requireValue("output")
+	if err != nil {
+		return learnArgs{}, err
+	}
+	scaffoldingCode, err := args.requireValue("scaffolding-code")
+	if err != nil {
+		return learnArgs{}, err
+	}
 	la := learnArgs{
 		paths:           args.positional,
-		outputDir:       args.value("output"),
+		outputDir:       outputDir,
 		provider:        args.value("provider"),
 		model:           args.value("model"),
 		baseURL:         args.value("base-url"),
 		responseFormat:  args.value("response-format"),
 		draftPath:       args.value("draft"),
-		scaffoldingCode: args.value("scaffolding-code"),
+		scaffoldingCode: scaffoldingCode,
 		force:           args.value("force") == "true",
 		skipMatch:       args.value("skip-match") == "true",
 	}

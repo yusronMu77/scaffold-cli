@@ -689,6 +689,22 @@ func TestCreate_RejectsUnknownFlag(t *testing.T) {
 	}
 }
 
+// #93: a space-separated "--output value" must error instead of silently parsing --output as a
+// bare boolean and writing into a stray "true/" directory. Built by hand rather than via
+// createInto, since that helper always appends its own "--output=<dir>" at the end, which would
+// mask the bug by overwriting the bare flag in the flags map.
+func TestCreate_BareOutputFlagErrorsInsteadOfWritingToTrueDir(t *testing.T) {
+	root := buildLeafVersionScaffold(t)
+	_, err := run(t, newCreateCommand, "spring", "myapp", "--scaffold-version=legacy",
+		"--scaffolding-code="+root, "--output", "some-dir")
+	if err == nil {
+		t.Fatal("expected a bare --output to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "--output") {
+		t.Errorf("expected the error to name --output, got: %v", err)
+	}
+}
+
 func TestCreate_RejectsUnregisteredAxisValue(t *testing.T) {
 	root := buildScaffoldingCode(t)
 	_, _, err := createInto(t, root, "fw", "services", "payment", "--function=web", "--style=nope")
