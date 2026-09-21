@@ -150,12 +150,19 @@ func isMultiExample(files []SourceFile) bool {
 
 // promptForFiles picks the system prompt to send: the multi-example addendum applies only when
 // files actually came from more than one example, so a single-example call's request is
-// byte-for-byte what v1 always sent.
-func promptForFiles(files []SourceFile) string {
+// byte-for-byte what v1 always sent. userAddendum, if non-empty, is appended after everything
+// else - never spliced in earlier or allowed to replace any of it - so a project's own guidance
+// can only add to the engine's invariants (reserved names, schema, casing-filter rules), never
+// override them. Empty userAddendum reproduces today's exact output unchanged.
+func promptForFiles(files []SourceFile, userAddendum string) string {
+	base := systemPrompt
 	if isMultiExample(files) {
-		return multiExampleSystemPrompt
+		base = multiExampleSystemPrompt
 	}
-	return systemPrompt
+	if userAddendum == "" {
+		return base
+	}
+	return base + "\n\n" + userAddendum
 }
 
 // inputSchema is the JSON Schema the model's tool call must satisfy, shared verbatim across every

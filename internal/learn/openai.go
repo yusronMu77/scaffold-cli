@@ -30,12 +30,15 @@ type openAIClient struct {
 	baseURL        string
 	model          string
 	responseFormat string
+	promptAddendum string
 	http           *http.Client
 }
 
 // NewOpenAIClient builds an Inferer for the OpenAI-compatible Chat Completions API. responseFormat
 // is one of ResponseFormatTool/ResponseFormatJSONSchema; empty behaves as ResponseFormatTool.
-func NewOpenAIClient(apiKey, baseURL, model, responseFormat string) Inferer {
+// promptAddendum, if non-empty, is appended to the built-in system prompt for every Infer call
+// (see promptForFiles).
+func NewOpenAIClient(apiKey, baseURL, model, responseFormat, promptAddendum string) Inferer {
 	if baseURL == "" {
 		baseURL = DefaultOpenAIBaseURL
 	}
@@ -47,6 +50,7 @@ func NewOpenAIClient(apiKey, baseURL, model, responseFormat string) Inferer {
 		baseURL:        strings.TrimRight(baseURL, "/"),
 		model:          model,
 		responseFormat: responseFormat,
+		promptAddendum: promptAddendum,
 		http:           &http.Client{Timeout: 180 * time.Second},
 	}
 }
@@ -124,7 +128,7 @@ func (c *openAIClient) Infer(ctx context.Context, files []SourceFile) (*Draft, e
 	reqBody := openAIRequest{
 		Model: c.model,
 		Messages: []openAIMessage{
-			{Role: "system", Content: promptForFiles(files)},
+			{Role: "system", Content: promptForFiles(files, c.promptAddendum)},
 			{Role: "user", Content: buildUserContent(files)},
 		},
 	}

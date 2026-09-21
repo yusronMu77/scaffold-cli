@@ -6,7 +6,7 @@ func TestResolveClient_AutoDetectsSingleProvider(t *testing.T) {
 	t.Setenv(EnvAnthropicAPIKey, "sk-ant-test")
 	t.Setenv(EnvOpenAIAPIKey, "")
 
-	client, err := ResolveClient("", "", "", "")
+	client, err := ResolveClient("", "", "", "", "")
 	if err != nil {
 		t.Fatalf("ResolveClient returned error: %v", err)
 	}
@@ -19,7 +19,7 @@ func TestResolveClient_AmbiguousWithoutExplicitProvider(t *testing.T) {
 	t.Setenv(EnvAnthropicAPIKey, "sk-ant-test")
 	t.Setenv(EnvOpenAIAPIKey, "sk-oai-test")
 
-	if _, err := ResolveClient("", "", "", ""); err == nil {
+	if _, err := ResolveClient("", "", "", "", ""); err == nil {
 		t.Fatal("expected an error when both provider keys are set and --provider is omitted")
 	}
 }
@@ -28,7 +28,7 @@ func TestResolveClient_NoProviderConfigured(t *testing.T) {
 	t.Setenv(EnvAnthropicAPIKey, "")
 	t.Setenv(EnvOpenAIAPIKey, "")
 
-	if _, err := ResolveClient("", "", "", ""); err == nil {
+	if _, err := ResolveClient("", "", "", "", ""); err == nil {
 		t.Fatal("expected an error when neither provider key is set")
 	}
 }
@@ -37,14 +37,14 @@ func TestResolveClient_ExplicitProviderMissingKey(t *testing.T) {
 	t.Setenv(EnvAnthropicAPIKey, "")
 	t.Setenv(EnvOpenAIAPIKey, "")
 
-	if _, err := ResolveClient("anthropic", "", "", ""); err == nil {
+	if _, err := ResolveClient("anthropic", "", "", "", ""); err == nil {
 		t.Fatal("expected an error requesting --provider=anthropic without ANTHROPIC_API_KEY set")
 	}
 }
 
 func TestResolveClient_UnknownProvider(t *testing.T) {
 	t.Setenv(EnvAnthropicAPIKey, "sk-ant-test")
-	if _, err := ResolveClient("bogus", "", "", ""); err == nil {
+	if _, err := ResolveClient("bogus", "", "", "", ""); err == nil {
 		t.Fatal("expected an error for an unrecognized --provider value")
 	}
 }
@@ -55,18 +55,18 @@ func TestResolveClient_RejectsBaseURLWithAnthropic(t *testing.T) {
 	t.Setenv(EnvAnthropicAPIKey, "sk-ant-test")
 	t.Setenv(EnvOpenAIAPIKey, "")
 
-	if _, err := ResolveClient("anthropic", "", "https://gateway.internal/v1", ""); err == nil {
+	if _, err := ResolveClient("anthropic", "", "https://gateway.internal/v1", "", ""); err == nil {
 		t.Fatal("expected --base-url with --provider=anthropic to be rejected")
 	}
 	// Auto-detection lands on the same client, so it has to be rejected there too.
-	if _, err := ResolveClient("", "", "https://gateway.internal/v1", ""); err == nil {
+	if _, err := ResolveClient("", "", "https://gateway.internal/v1", "", ""); err == nil {
 		t.Fatal("expected --base-url to be rejected when auto-detection picks anthropic")
 	}
 }
 
 func TestResolveClient_ExplicitOpenAI(t *testing.T) {
 	t.Setenv(EnvOpenAIAPIKey, "sk-oai-test")
-	client, err := ResolveClient("openai", "", "https://example.test/v1", "")
+	client, err := ResolveClient("openai", "", "https://example.test/v1", "", "")
 	if err != nil {
 		t.Fatalf("ResolveClient returned error: %v", err)
 	}
@@ -87,25 +87,25 @@ func TestResolveClient_RejectsResponseFormatWithAnthropic(t *testing.T) {
 	t.Setenv(EnvAnthropicAPIKey, "sk-ant-test")
 	t.Setenv(EnvOpenAIAPIKey, "")
 
-	if _, err := ResolveClient("anthropic", "", "", ResponseFormatJSONSchema); err == nil {
+	if _, err := ResolveClient("anthropic", "", "", ResponseFormatJSONSchema, ""); err == nil {
 		t.Fatal("expected --response-format=json_schema with --provider=anthropic to be rejected")
 	}
 	// Auto-detection lands on the same client, so it has to be rejected there too.
-	if _, err := ResolveClient("", "", "", ResponseFormatJSONSchema); err == nil {
+	if _, err := ResolveClient("", "", "", ResponseFormatJSONSchema, ""); err == nil {
 		t.Fatal("expected --response-format=json_schema to be rejected when auto-detection picks anthropic")
 	}
 }
 
 func TestResolveClient_UnknownResponseFormat(t *testing.T) {
 	t.Setenv(EnvOpenAIAPIKey, "sk-oai-test")
-	if _, err := ResolveClient("openai", "", "", "bogus"); err == nil {
+	if _, err := ResolveClient("openai", "", "", "bogus", ""); err == nil {
 		t.Fatal("expected an error for an unrecognized --response-format value")
 	}
 }
 
 func TestResolveClient_PlumbsResponseFormatToOpenAI(t *testing.T) {
 	t.Setenv(EnvOpenAIAPIKey, "sk-oai-test")
-	client, err := ResolveClient("openai", "", "", ResponseFormatJSONSchema)
+	client, err := ResolveClient("openai", "", "", ResponseFormatJSONSchema, "")
 	if err != nil {
 		t.Fatalf("ResolveClient returned error: %v", err)
 	}

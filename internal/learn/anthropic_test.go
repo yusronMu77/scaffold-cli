@@ -56,6 +56,40 @@ func TestAnthropicClient_Infer_ParsesToolUseResponse(t *testing.T) {
 	}
 }
 
+// A non-empty promptAddendum on the client must reach the outgoing request's system prompt,
+// appended after the built-in prompt (see TestPromptForFiles_AddendumAppendedAfterBase).
+func TestAnthropicClient_Infer_SendsPromptAddendum(t *testing.T) {
+	var gotBody anthropicRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decoding request body: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{"content": [{"type": "tool_use", "name": "` + toolName + `", "input": {
+			"name": "widget", "variables": [], "files": [{"path": "a.txt", "content": "x"}]
+		}}]}`))
+	}))
+	defer srv.Close()
+
+	c := &anthropicClient{
+		apiKey: "test-key", model: "test-model", promptAddendum: "PROJECT-SPECIFIC RULE",
+		http: srv.Client(),
+	}
+	orig := anthropicEndpoint
+	anthropicEndpoint = srv.URL
+	defer func() { anthropicEndpoint = orig }()
+
+	if _, err := c.Infer(context.Background(), []SourceFile{{Path: "a.java", Content: "x"}}); err != nil {
+		t.Fatalf("Infer returned error: %v", err)
+	}
+	if !strings.HasSuffix(gotBody.System, "PROJECT-SPECIFIC RULE") {
+		t.Errorf("expected the system prompt to end with the addendum, got:\n%s", gotBody.System)
+	}
+	if !strings.HasPrefix(gotBody.System, systemPrompt) {
+		t.Error("expected the built-in prompt to still come first, unmodified")
+	}
+}
+
 func TestAnthropicClient_Infer_ReportsTruncatedDraft(t *testing.T) {
 	// A response cut off at max_tokens is still HTTP 200, and its tool_use input carries only the
 	// fields that fit - here a name with no files. Without the stop_reason check that surfaces as

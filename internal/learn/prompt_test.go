@@ -48,13 +48,47 @@ func TestIsMultiExample_TrueOnlyWhenAnyExampleIndexSet(t *testing.T) {
 
 func TestPromptForFiles_SelectsAddendumOnlyForMultiExample(t *testing.T) {
 	single := []SourceFile{{Path: "a.txt", Content: "x"}}
-	if got := promptForFiles(single); got != systemPrompt {
+	if got := promptForFiles(single, ""); got != systemPrompt {
 		t.Error("expected the single-example case to send exactly v1's systemPrompt, unmodified")
 	}
 
 	multi := []SourceFile{{Path: "a.txt", Content: "x", ExampleIndex: 1}}
-	if got := promptForFiles(multi); got != multiExampleSystemPrompt {
+	if got := promptForFiles(multi, ""); got != multiExampleSystemPrompt {
 		t.Error("expected a multi-example set to select multiExampleSystemPrompt")
+	}
+}
+
+// An empty userAddendum must reproduce today's exact output - no trailing separator, nothing
+// appended - so a caller that never sets --prompt-addendum sees zero behavior change.
+func TestPromptForFiles_EmptyAddendumUnchanged(t *testing.T) {
+	single := []SourceFile{{Path: "a.txt", Content: "x"}}
+	if got := promptForFiles(single, ""); got != systemPrompt {
+		t.Errorf("expected exactly systemPrompt with no addendum, got a different string (len %d vs %d)",
+			len(got), len(systemPrompt))
+	}
+}
+
+// A non-empty userAddendum must be appended after the base prompt, never spliced earlier or
+// allowed to replace any of it - the whole point is that a project's guidance can only add, never
+// override, the engine's compiled invariants (reserved names, schema, casing filters).
+func TestPromptForFiles_AddendumAppendedAfterBase(t *testing.T) {
+	addendum := "Project-specific: also treat \"Widget\" as a reserved word."
+
+	single := []SourceFile{{Path: "a.txt", Content: "x"}}
+	got := promptForFiles(single, addendum)
+	want := systemPrompt + "\n\n" + addendum
+	if got != want {
+		t.Errorf("expected base prompt + addendum, got:\n%s", got)
+	}
+	if !strings.HasPrefix(got, systemPrompt) {
+		t.Error("expected the addendum to come after the full base prompt, not replace any of it")
+	}
+
+	multi := []SourceFile{{Path: "a.txt", Content: "x", ExampleIndex: 1}}
+	gotMulti := promptForFiles(multi, addendum)
+	wantMulti := multiExampleSystemPrompt + "\n\n" + addendum
+	if gotMulti != wantMulti {
+		t.Errorf("expected multi-example prompt + addendum, got:\n%s", gotMulti)
 	}
 }
 

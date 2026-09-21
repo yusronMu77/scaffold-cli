@@ -17,7 +17,7 @@ import (
 // since it isn't rendering an existing template.
 var learnFlags = []string{
 	"output", "provider", "model", "base-url", "response-format", "draft", "force",
-	"scaffolding-code", "skip-match",
+	"scaffolding-code", "skip-match", "prompt-addendum",
 }
 
 func newLearnCommand() *cobra.Command {
@@ -50,6 +50,12 @@ func newLearnCommand() *cobra.Command {
 			"forces a tool call, as always; \"json_schema\" uses response_format instead, for a model\n" +
 			"that rejects forced tool_choice while still needing schema-valid JSON. Anthropic only\n" +
 			"supports forced tool use and rejects any other value.\n\n" +
+			"--prompt-addendum=<path> appends a file's content to the built-in system prompt (never\n" +
+			"replacing any of it) for project-specific guidance - extra reserved words, domain naming\n" +
+			"conventions. With no flag given, `learn_prompt_addendum:` in ./.scaffold.yaml or\n" +
+			"$HOME/.scaffold.yaml is checked next; with neither, `learn` uses its built-in prompt\n" +
+			"unmodified, today's exact behavior. Has no effect together with --draft, which never\n" +
+			"calls a provider.\n\n" +
 			"An AI agent invoking this command is already an LLM - rather than pay for a second,\n" +
 			"separately-billed model call, it can do the invariant/variable separation itself and\n" +
 			"pass the result straight through with --draft=<path|->, skipping any provider call and\n" +
@@ -118,7 +124,8 @@ func runLearn(cmd *cobra.Command, rawArgs []string) error {
 		return runLearnWithDraftJSON(cmd, learnArgs.outputDir, raw, learnArgs.force)
 	}
 
-	client, err := learn.ResolveClient(learnArgs.provider, learnArgs.model, learnArgs.baseURL, learnArgs.responseFormat)
+	client, err := learn.ResolveClient(learnArgs.provider, learnArgs.model, learnArgs.baseURL,
+		learnArgs.responseFormat, learnArgs.promptAddendum)
 	if err != nil {
 		return err
 	}
@@ -131,7 +138,10 @@ func runLearn(cmd *cobra.Command, rawArgs []string) error {
 type learnArgs struct {
 	paths                                                                           []string
 	outputDir, provider, model, baseURL, responseFormat, draftPath, scaffoldingCode string
-	force, skipMatch                                                                bool
+	// promptAddendum is already-read file content (see resolvePromptAddendum), not a path - it goes
+	// straight to learn.ResolveClient to append to the built-in system prompt.
+	promptAddendum   string
+	force, skipMatch bool
 }
 
 // parseLearnArgs validates learn's positional/flag shape, kept separate from provider resolution
@@ -150,6 +160,14 @@ func parseLearnArgs(args *parsedArgs) (learnArgs, error) {
 	if err != nil {
 		return learnArgs{}, err
 	}
+	promptAddendumFlag, err := args.requireValue("prompt-addendum")
+	if err != nil {
+		return learnArgs{}, err
+	}
+	promptAddendum, err := resolvePromptAddendum(promptAddendumFlag)
+	if err != nil {
+		return learnArgs{}, err
+	}
 	la := learnArgs{
 		paths:           args.positional,
 		outputDir:       outputDir,
@@ -159,6 +177,7 @@ func parseLearnArgs(args *parsedArgs) (learnArgs, error) {
 		responseFormat:  args.value("response-format"),
 		draftPath:       args.value("draft"),
 		scaffoldingCode: scaffoldingCode,
+		promptAddendum:  promptAddendum,
 		force:           args.value("force") == "true",
 		skipMatch:       args.value("skip-match") == "true",
 	}
@@ -171,12 +190,30 @@ func parseLearnArgs(args *parsedArgs) (learnArgs, error) {
 			"--output is required for learn: a draft must not land somewhere create/list/lint " +
 				"would discover it before it has been reviewed")
 	}
-	if la.draftPath != "" && (la.provider != "" || la.model != "" || la.baseURL != "" || la.responseFormat != "") {
+	if la.draftPath != "" && (la.provider != "" || la.model != "" || la.baseURL != "" ||
+		la.responseFormat != "" || la.promptAddendum != "") {
 		return learnArgs{}, fmt.Errorf(
 			"--draft supplies an already-reasoned draft directly, so --provider/--model/--base-url/" +
-				"--response-format (which pick a provider to call) don't apply together with it")
+				"--response-format/--prompt-addendum (which all pick or shape a provider call) don't " +
+				"apply together with it")
 	}
 	return la, nil
+}
+
+// resolvePromptAddendum reads the file resolveLearnPromptAddendumPath names, if any. No path
+// resolved anywhere (flag or config) returns "" with no error - learn's built-in prompt then goes
+// out unmodified, today's exact behavior. A path that IS named but can't be read is a real
+// misconfiguration and fails loudly, rather than silently falling back as if nothing were set.
+func resolvePromptAddendum(flagValue string) (string, error) {
+	path := resolveLearnPromptAddendumPath(flagValue)
+	if path == "" {
+		return "", nil
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading --prompt-addendum file %s: %w", path, err)
+	}
+	return string(content), nil
 }
 
 // readDraftInput reads a draft's JSON from a file, or from stdin when path is "-".

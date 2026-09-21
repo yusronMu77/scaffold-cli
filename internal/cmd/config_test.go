@@ -60,3 +60,60 @@ func TestResolveScaffoldingCodeRoot_DefaultWhenNoConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveLearnPromptAddendumPath_FlagWins(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, configFileName), []byte("learn_prompt_addendum: from-config.md\n"), 0o644); err != nil {
+		t.Fatalf("writing config fixture: %v", err)
+	}
+
+	withTempCwd(t, dir, func() {
+		got := resolveLearnPromptAddendumPath("from-flag.md")
+		if got != "from-flag.md" {
+			t.Errorf("expected flag value to win over config, got %q", got)
+		}
+	})
+}
+
+func TestResolveLearnPromptAddendumPath_ConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, configFileName), []byte("learn_prompt_addendum: ./learn-prompt.md\n"), 0o644); err != nil {
+		t.Fatalf("writing config fixture: %v", err)
+	}
+
+	withTempCwd(t, dir, func() {
+		got := resolveLearnPromptAddendumPath("")
+		if got != "./learn-prompt.md" {
+			t.Errorf("expected config file value, got %q", got)
+		}
+	})
+}
+
+// No flag and no config value must resolve to "" - `learn` then sends its built-in prompt
+// unmodified, today's exact behavior for anyone who never opts in.
+func TestResolveLearnPromptAddendumPath_EmptyWhenNoneConfigured(t *testing.T) {
+	dir := t.TempDir()
+
+	withTempCwd(t, dir, func() {
+		got := resolveLearnPromptAddendumPath("")
+		if got != "" {
+			t.Errorf("expected empty path when nothing configures one, got %q", got)
+		}
+	})
+}
+
+// A .scaffold.yaml that sets scaffolding_code but not learn_prompt_addendum must not confuse the
+// two fields with each other.
+func TestResolveLearnPromptAddendumPath_UnaffectedByUnrelatedConfigKey(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, configFileName), []byte("scaffolding_code: ../../scaffolding-code\n"), 0o644); err != nil {
+		t.Fatalf("writing config fixture: %v", err)
+	}
+
+	withTempCwd(t, dir, func() {
+		got := resolveLearnPromptAddendumPath("")
+		if got != "" {
+			t.Errorf("expected empty path, got %q", got)
+		}
+	})
+}
