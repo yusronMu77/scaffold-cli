@@ -18,7 +18,10 @@ const (
 //
 // responseFormat selects how the OpenAI-shaped client asks for JSON back (ResponseFormatTool or
 // ResponseFormatJSONSchema); empty defaults to ResponseFormatTool, today's only behavior.
-func ResolveClient(provider, model, baseURL, responseFormat string) (Inferer, error) {
+//
+// promptAddendum, if non-empty, is appended to the built-in system prompt on every Infer call
+// (see promptForFiles) - it never replaces any part of it.
+func ResolveClient(provider, model, baseURL, responseFormat, promptAddendum string) (Inferer, error) {
 	anthropicKey := os.Getenv(EnvAnthropicAPIKey)
 	openAIKey := os.Getenv(EnvOpenAIAPIKey)
 
@@ -45,7 +48,7 @@ func ResolveClient(provider, model, baseURL, responseFormat string) (Inferer, er
 				"only supports forced tool use - drop it, or pass --provider=openai (it reads %s)",
 				EnvOpenAIAPIKey)
 		}
-		return NewAnthropicClient(anthropicKey, model), nil
+		return NewAnthropicClient(anthropicKey, model, promptAddendum), nil
 	}
 
 	switch provider {
@@ -58,7 +61,7 @@ func ResolveClient(provider, model, baseURL, responseFormat string) (Inferer, er
 		if openAIKey == "" {
 			return nil, fmt.Errorf("--provider=openai requires %s to be set", EnvOpenAIAPIKey)
 		}
-		return NewOpenAIClient(openAIKey, baseURL, model, responseFormat), nil
+		return NewOpenAIClient(openAIKey, baseURL, model, responseFormat, promptAddendum), nil
 	case "":
 		switch {
 		case anthropicKey != "" && openAIKey != "":
@@ -68,7 +71,7 @@ func ResolveClient(provider, model, baseURL, responseFormat string) (Inferer, er
 		case anthropicKey != "":
 			return anthropic()
 		case openAIKey != "":
-			return NewOpenAIClient(openAIKey, baseURL, model, responseFormat), nil
+			return NewOpenAIClient(openAIKey, baseURL, model, responseFormat, promptAddendum), nil
 		default:
 			return nil, fmt.Errorf("no LLM provider configured - set %s or %s "+
 				"(or pass --provider explicitly)", EnvAnthropicAPIKey, EnvOpenAIAPIKey)

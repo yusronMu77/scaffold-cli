@@ -181,6 +181,74 @@ func TestLearn_DraftRejectsResponseFormatFlag(t *testing.T) {
 	}
 }
 
+// --draft never calls a provider, so a prompt addendum (which only affects the provider call)
+// combined with it must be rejected the same way --provider/--response-format already are.
+func TestLearn_DraftRejectsPromptAddendumFlag(t *testing.T) {
+	exampleDir := writeExampleFolder(t)
+	addendum := filepath.Join(t.TempDir(), "addendum.md")
+	if err := os.WriteFile(addendum, []byte("extra rule"), 0o644); err != nil {
+		t.Fatalf("writing addendum fixture: %v", err)
+	}
+	_, err := run(t, newLearnCommand, exampleDir, "--output="+t.TempDir(),
+		"--draft="+filepath.Join(t.TempDir(), "draft.json"), "--prompt-addendum="+addendum)
+	if err == nil || !strings.Contains(err.Error(), "don't apply together") {
+		t.Fatalf("expected --draft combined with --prompt-addendum to be rejected, got %v", err)
+	}
+}
+
+// A --prompt-addendum naming a file that doesn't exist is a real misconfiguration and must fail
+// loudly, not silently fall back to the built-in prompt as if nothing were set.
+func TestLearn_PromptAddendumMissingFileIsReported(t *testing.T) {
+	exampleDir := writeExampleFolder(t)
+	t.Setenv(learn.EnvOpenAIAPIKey, "sk-oai-test")
+	t.Setenv(learn.EnvAnthropicAPIKey, "")
+
+	_, err := run(t, newLearnCommand, exampleDir, "--output="+t.TempDir(),
+		"--prompt-addendum="+filepath.Join(t.TempDir(), "does-not-exist.md"))
+	if err == nil || !strings.Contains(err.Error(), "prompt-addendum") {
+		t.Fatalf("expected a missing --prompt-addendum file to be reported, got %v", err)
+	}
+}
+
+// parseLearnArgs must read the addendum file's actual content (not just resolve a path) into
+// learnArgs.promptAddendum, ready to hand straight to learn.ResolveClient.
+func TestParseLearnArgs_ReadsPromptAddendumFileContent(t *testing.T) {
+	addendum := filepath.Join(t.TempDir(), "addendum.md")
+	if err := os.WriteFile(addendum, []byte("PROJECT RULE"), 0o644); err != nil {
+		t.Fatalf("writing addendum fixture: %v", err)
+	}
+
+	args := mustParseArgs(t, []string{"some-example", "--output=out", "--prompt-addendum=" + addendum})
+	la, err := parseLearnArgs(args)
+	if err != nil {
+		t.Fatalf("parseLearnArgs returned error: %v", err)
+	}
+	if la.promptAddendum != "PROJECT RULE" {
+		t.Errorf("expected the addendum file's content, got %q", la.promptAddendum)
+	}
+}
+
+// No --prompt-addendum and no config value must resolve to "", not an error.
+func TestParseLearnArgs_PromptAddendumEmptyWhenNotConfigured(t *testing.T) {
+	args := mustParseArgs(t, []string{"some-example", "--output=out"})
+	la, err := parseLearnArgs(args)
+	if err != nil {
+		t.Fatalf("parseLearnArgs returned error: %v", err)
+	}
+	if la.promptAddendum != "" {
+		t.Errorf("expected no addendum, got %q", la.promptAddendum)
+	}
+}
+
+// A bare --prompt-addendum (no "=") is the same footgun #93 fixed for --output/--scaffolding-code
+// - it must be rejected, not silently resolved to the literal path "true".
+func TestParseLearnArgs_RejectsBarePromptAddendum(t *testing.T) {
+	args := mustParseArgs(t, []string{"some-example", "--output=out", "--prompt-addendum", "some-file.md"})
+	if _, err := parseLearnArgs(args); err == nil {
+		t.Fatal("expected a bare --prompt-addendum to be rejected")
+	}
+}
+
 // No provider env var set: must fail resolving the provider, not fail on flag validation, so an
 // unrecognized --response-format value is still reachable and reported clearly.
 func TestLearn_UnknownResponseFormatRejected(t *testing.T) {

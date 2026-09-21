@@ -15,7 +15,8 @@ const configFileName = ".scaffold.yaml"
 const envScaffoldingCode = "SCAFFOLD_CODE"
 
 type config struct {
-	ScaffoldingCode string `yaml:"scaffolding_code"`
+	ScaffoldingCode     string `yaml:"scaffolding_code"`
+	LearnPromptAddendum string `yaml:"learn_prompt_addendum"`
 }
 
 func loadConfig(path string) (*config, error) {
@@ -59,6 +60,25 @@ func resolveScaffoldingCodeRoot(flagValue string) string {
 		}
 	}
 	return defaultScaffoldingCodeRoot
+}
+
+// resolveLearnPromptAddendumPath decides which file (if any) to append to `learn`'s built-in
+// system prompt, checked in order:
+//
+//  1. --prompt-addendum=<path>
+//  2. learn_prompt_addendum: in ./.scaffold.yaml
+//  3. learn_prompt_addendum: in $HOME/.scaffold.yaml
+//  4. none - `learn` uses its built-in prompt unmodified, today's exact behavior.
+func resolveLearnPromptAddendumPath(flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	for _, dir := range configSearchDirs() {
+		if cfg, err := loadConfig(filepath.Join(dir, configFileName)); err == nil && cfg.LearnPromptAddendum != "" {
+			return cfg.LearnPromptAddendum
+		}
+	}
+	return ""
 }
 
 // configSearchDirs is the ordered list of directories searched for .scaffold.yaml: the current

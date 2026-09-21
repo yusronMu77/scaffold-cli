@@ -27,17 +27,22 @@ const (
 // anthropicClient implements Inferer against Anthropic's Messages API directly (no SDK): a forced
 // tool_choice makes the response's tool_use.input already-parsed JSON matching inputSchema().
 type anthropicClient struct {
-	apiKey string
-	model  string
-	http   *http.Client
+	apiKey         string
+	model          string
+	promptAddendum string
+	http           *http.Client
 }
 
-// NewAnthropicClient builds an Inferer for Anthropic's Messages API.
-func NewAnthropicClient(apiKey, model string) Inferer {
+// NewAnthropicClient builds an Inferer for Anthropic's Messages API. promptAddendum, if non-empty,
+// is appended to the built-in system prompt for every Infer call (see promptForFiles).
+func NewAnthropicClient(apiKey, model, promptAddendum string) Inferer {
 	if model == "" {
 		model = DefaultAnthropicModel
 	}
-	return &anthropicClient{apiKey: apiKey, model: model, http: &http.Client{Timeout: 180 * time.Second}}
+	return &anthropicClient{
+		apiKey: apiKey, model: model, promptAddendum: promptAddendum,
+		http: &http.Client{Timeout: 180 * time.Second},
+	}
 }
 
 type anthropicRequest struct {
@@ -82,7 +87,7 @@ func (c *anthropicClient) Infer(ctx context.Context, files []SourceFile) (*Draft
 	reqBody := anthropicRequest{
 		Model:     c.model,
 		MaxTokens: anthropicMaxTokens,
-		System:    promptForFiles(files),
+		System:    promptForFiles(files, c.promptAddendum),
 		Messages:  []anthropicMessage{{Role: "user", Content: buildUserContent(files)}},
 		Tools: []anthropicTool{{
 			Name:        toolName,

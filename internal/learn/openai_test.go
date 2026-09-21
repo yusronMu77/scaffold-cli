@@ -83,8 +83,39 @@ func TestOpenAIClient_Infer_ReportsTruncatedDraft(t *testing.T) {
 	}
 }
 
+// A non-empty promptAddendum on the client must reach the outgoing request's system message,
+// appended after the built-in prompt (see TestPromptForFiles_AddendumAppendedAfterBase).
+func TestOpenAIClient_Infer_SendsPromptAddendum(t *testing.T) {
+	var gotBody openAIRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decoding request body: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{"choices": [{"message": {"tool_calls": [{"function": {
+			"name": "` + toolName + `",
+			"arguments": "{\"name\":\"widget\",\"variables\":[],\"files\":[{\"path\":\"a.txt\",\"content\":\"x\"}]}"
+		}}]}}]}`))
+	}))
+	defer srv.Close()
+
+	c := &openAIClient{
+		apiKey: "test-key", baseURL: srv.URL, model: "test-model", promptAddendum: "PROJECT-SPECIFIC RULE",
+		http: srv.Client(),
+	}
+	if _, err := c.Infer(context.Background(), []SourceFile{{Path: "a.java", Content: "x"}}); err != nil {
+		t.Fatalf("Infer returned error: %v", err)
+	}
+	if len(gotBody.Messages) == 0 || !strings.HasSuffix(gotBody.Messages[0].Content, "PROJECT-SPECIFIC RULE") {
+		t.Errorf("expected the system message to end with the addendum, got:\n%+v", gotBody.Messages)
+	}
+	if !strings.HasPrefix(gotBody.Messages[0].Content, systemPrompt) {
+		t.Error("expected the built-in prompt to still come first, unmodified")
+	}
+}
+
 func TestNewOpenAIClient_TrimsTrailingSlashFromBaseURL(t *testing.T) {
-	client := NewOpenAIClient("key", "https://example.test/v1/", "", "")
+	client := NewOpenAIClient("key", "https://example.test/v1/", "", "", "")
 	oc := client.(*openAIClient)
 	if oc.baseURL != "https://example.test/v1" {
 		t.Errorf("expected trailing slash trimmed, got %q", oc.baseURL)
